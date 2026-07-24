@@ -113,6 +113,9 @@
 			</p>
 			<div class="mt-1 flex flex-wrap items-center gap-1.5">
 				<DownloadStatusBadge {task} />
+				{#if task.source === 'tidal'}
+					<span class="badge badge-ghost badge-sm">Tidal · Tidarr</span>
+				{/if}
 				{#if task.source === 'usenet'}
 					<span class="badge badge-ghost badge-sm">Usenet</span>
 				{/if}

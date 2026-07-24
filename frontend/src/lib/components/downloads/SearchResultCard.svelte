@@ -25,6 +25,7 @@
 	const RING_C = 2 * Math.PI * RING_R;
 
 	const isUsenet = $derived(candidate.source === 'usenet' && Boolean(candidate.usenet_release));
+	const isTidal = $derived(candidate.source === 'tidal' && Boolean(candidate.tidal_id));
 	const percent = $derived(Math.round(candidate.final_score * 100));
 
 	// --- soulseek signals ---
@@ -72,20 +73,30 @@
 	);
 
 	const breakdown = $derived(
-		isUsenet
-			? `${rel?.indexer_name ?? 'Usenet'} · ${usenetFormat} · ${sizeLabel}` +
+		isTidal
+			? 'Tidarr · max FLAC · stereo only'
+			: isUsenet
+				? `${rel?.indexer_name ?? 'Usenet'} · ${usenetFormat} · ${sizeLabel}` +
 					`${rel?.grabs ? ` · ${rel.grabs} grabs` : ''}${ageLabel ? ` · ${ageLabel}` : ''}`
-			: `Coherence ${Math.round(candidate.coherence * 100)}% · ` +
+				: `Coherence ${Math.round(candidate.coherence * 100)}% · ` +
 					`File confidence ${Math.round(candidate.file_confidence * 100)}% · ` +
 					`${freeSlot ? 'Free slot' : 'Queued'}${uploadSpeed ? ` · ${Math.round(uploadSpeed / 1000)} KB/s` : ''}`
 	);
 
 	const heading = $derived(
-		isUsenet
-			? albumTitle || rel?.title || 'Unknown'
-			: candidate.parent_directory || 'Unknown folder'
+		isTidal
+			? candidate.tidal_title || albumTitle || 'Tidal result'
+			: isUsenet
+				? albumTitle || rel?.title || 'Unknown'
+				: candidate.parent_directory || 'Unknown folder'
 	);
-	const subtitle = $derived(isUsenet ? (rel?.title ?? '') : candidate.username);
+	const subtitle = $derived(
+		isTidal
+			? candidate.tidal_artist || 'Tidal via Tidarr'
+			: isUsenet
+				? (rel?.title ?? '')
+				: candidate.username
+	);
 
 	const dashoffset = $derived(RING_C * (1 - Math.max(0, Math.min(1, candidate.final_score))));
 </script>
@@ -106,7 +117,11 @@
 		<p class="truncate font-semibold" title={heading}>{heading}</p>
 		<p class="truncate text-sm text-base-content/60" title={subtitle}>{subtitle}</p>
 		<div class="mt-1.5 flex flex-wrap items-center gap-1.5">
-			{#if isUsenet}
+			{#if isTidal}
+				<span class="badge badge-success badge-sm">MAX FLAC</span>
+				<span class="badge badge-ghost badge-sm">Stereo</span>
+				<span class="badge badge-ghost badge-sm">Tidarr</span>
+			{:else if isUsenet}
 				<span class="badge badge-ghost badge-sm gap-1">
 					<Library class="size-3" aria-hidden="true" />{rel?.indexer_name}
 				</span>

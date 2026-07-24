@@ -1226,7 +1226,7 @@ def _row_to_task(row: sqlite3.Row | None) -> DownloadTask | None:
 
 
 # source -> the download client_type that owns it (fixed v1 map).
-_SOURCE_CLIENT_TYPE = {"soulseek": "slskd", "usenet": "sabnzbd"}
+_SOURCE_CLIENT_TYPE = {"tidal": "tidarr", "soulseek": "slskd", "usenet": "sabnzbd"}
 
 
 def _quarantine_row_to_admin(row: dict[str, Any]) -> dict[str, Any]:

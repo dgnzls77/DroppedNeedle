@@ -525,6 +525,8 @@ export const API = {
 		discard: (itemId: number) => `/api/v1/import/items/${itemId}/discard`
 	},
 	downloadClients: {
+		tidarr: () => '/api/v1/download-clients/tidarr',
+		tidarrTest: () => '/api/v1/download-clients/tidarr/test',
 		sabnzbd: () => '/api/v1/download-clients/sabnzbd',
 		sabnzbdTest: () => '/api/v1/download-clients/sabnzbd/test',
 		policy: () => '/api/v1/download-clients/policy',

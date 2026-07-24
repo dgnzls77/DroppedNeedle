@@ -23,6 +23,7 @@
 	import SettingsSecurity from '$lib/components/settings/SettingsSecurity.svelte';
 	import SettingsDownloadClient from '$lib/components/settings/SettingsDownloadClient.svelte';
 	import SettingsSabnzbd from '$lib/components/settings/SettingsSabnzbd.svelte';
+	import SettingsTidarr from '$lib/components/settings/SettingsTidarr.svelte';
 	import SettingsSourcePriority from '$lib/components/settings/SettingsSourcePriority.svelte';
 	import SettingsDownloadPolicy from '$lib/components/settings/SettingsDownloadPolicy.svelte';
 	import SettingsWanted from '$lib/components/settings/SettingsWanted.svelte';
@@ -297,6 +298,7 @@
 						<SettingsDownloadPolicy />
 						<SettingsWanted />
 						<SettingsSourcePriority />
+						<SettingsTidarr />
 						<SettingsDownloadClient />
 						<SettingsSabnzbd />
 						<SettingsOnboardingChecklist />

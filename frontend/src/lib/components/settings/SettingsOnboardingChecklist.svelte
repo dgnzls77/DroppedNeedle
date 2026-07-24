@@ -5,7 +5,10 @@
 		getDownloadClientConfigQuery,
 		getDownloadClientStatusQuery
 	} from '$lib/queries/downloads/DownloadClientQueries.svelte';
-	import { getSabnzbdConfigQuery } from '$lib/queries/downloads/DownloadClientsQueries.svelte';
+	import {
+		getSabnzbdConfigQuery,
+		getTidarrConfigQuery
+	} from '$lib/queries/downloads/DownloadClientsQueries.svelte';
 	import { getIndexersQuery } from '$lib/queries/downloads/IndexerQueries.svelte';
 	import { getTargetLibrarySettingsQuery } from '$lib/queries/library/LibraryPolicyQueries.svelte';
 
@@ -13,11 +16,15 @@
 	const dcQuery = getDownloadClientConfigQuery();
 	const statusQuery = getDownloadClientStatusQuery();
 	const sabQuery = getSabnzbdConfigQuery();
+	const tidarrQuery = getTidarrConfigQuery();
 	const indexersQuery = getIndexersQuery();
 
 	const hasLibraryPath = $derived((libQuery.data?.library_roots.length ?? 0) > 0);
 	const slskdConfigured = $derived(Boolean(dcQuery.data?.url && dcQuery.data?.api_key));
 	const sabnzbdEnabled = $derived(sabQuery.data?.enabled === true && Boolean(sabQuery.data?.url));
+	const tidarrEnabled = $derived(
+		tidarrQuery.data?.enabled === true && Boolean(tidarrQuery.data?.url)
+	);
 	const hasIndexer = $derived((indexersQuery.data?.length ?? 0) > 0);
 	const mountOk = $derived(statusQuery.data?.mount?.ok === true);
 	const hasAcoustid = $derived(Boolean(libQuery.data?.acoustid_api_key));
@@ -25,19 +32,19 @@
 	// Source-agnostic: "configured" if EITHER acquisition path can act, so a Usenet-only
 	// (or Soulseek-only) install isn't nagged about the other. The slskd mount item only
 	// appears once Soulseek is set up.
-	const aSourceConfigured = $derived(slskdConfigured || hasIndexer);
-	const aClientConfigured = $derived(slskdConfigured || sabnzbdEnabled);
+	const aSourceConfigured = $derived(tidarrEnabled || slskdConfigured || hasIndexer);
+	const aClientConfigured = $derived(tidarrEnabled || slskdConfigured || sabnzbdEnabled);
 
 	const items = $derived([
 		{ label: 'Add a library path', done: hasLibraryPath, required: true, optional: false },
 		{
-			label: 'Add an indexer or configure Soulseek',
+			label: 'Configure Tidarr, Soulseek, or an indexer',
 			done: aSourceConfigured,
 			required: true,
 			optional: false
 		},
 		{
-			label: 'Configure a download client (slskd and/or SABnzbd)',
+			label: 'Configure a download client',
 			done: aClientConfigured,
 			required: true,
 			optional: false

@@ -47,7 +47,7 @@ class IndexerReorderRequest(AppStruct):
 
 
 class SourcePriority(AppStruct):
-    """The order acquisition sources are tried (D3) - e.g. ``["soulseek", "usenet"]``."""
+    """The acquisition order, e.g. ``["tidal", "soulseek", "usenet"]``."""
 
     order: list[str]
 
@@ -128,7 +128,7 @@ class DownloadTaskResponse(AppStruct):
     id: str
     user_id: str
     download_type: str
-    # "soulseek" | "usenet" - drives the source badge + the "via album NZB" label
+    # "tidal" | "soulseek" | "usenet" - drives the source badge and source UI
     # (derived as source=="usenet" && download_type=="track").
     source: str
     release_group_mbid: str

@@ -1826,6 +1826,14 @@ export interface SabnzbdTestResult {
 	complete_dir?: string | null;
 }
 
+export interface TidarrConnectionSettings {
+	enabled: boolean;
+	client_type: string;
+	url: string;
+	api_key: string;
+	country_code: string;
+}
+
 export interface SourcePriority {
 	order: string[];
 }
@@ -1903,6 +1911,10 @@ export interface ScoredCandidate {
 	parent_directory: string;
 	files: DownloadSearchResultFile[];
 	usenet_release?: UsenetRelease | null;
+	tidal_id?: string | null;
+	tidal_title?: string | null;
+	tidal_artist?: string | null;
+	tidal_media_type?: string | null;
 	coherence: number;
 	file_confidence: number;
 	final_score: number;

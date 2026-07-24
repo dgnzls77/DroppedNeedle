@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Fixed v1 source -> client_type map (the DownloadTask.download_client value).
-_CLIENT_FOR_SOURCE = {"soulseek": "slskd", "usenet": "sabnzbd"}
+_CLIENT_FOR_SOURCE = {"tidal": "tidarr", "soulseek": "slskd", "usenet": "sabnzbd"}
 
 ALREADY_IN_LIBRARY = "already_in_library"
 
