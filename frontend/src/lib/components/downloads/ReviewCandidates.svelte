@@ -47,6 +47,11 @@
 	const groups = $derived(
 		[
 			{
+				key: 'tidal',
+				label: 'Tidal via Tidarr',
+				items: indexed.filter((c) => c.candidate.source === 'tidal')
+			},
+			{
 				key: 'soulseek',
 				label: 'Soulseek',
 				items: indexed.filter((c) => (c.candidate.source ?? 'soulseek') === 'soulseek')

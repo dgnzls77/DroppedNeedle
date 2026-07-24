@@ -31,6 +31,10 @@ class ScoredCandidate(AppStruct):
     parent_directory: str = ""
     files: list[DownloadSearchResult] = []
     usenet_release: UsenetRelease | None = None
+    tidal_id: str | None = None
+    tidal_title: str | None = None
+    tidal_artist: str | None = None
+    tidal_media_type: str | None = None
     coherence: float = 0.0
     file_confidence: float = 0.0
     final_score: float = 0.0
@@ -118,7 +122,7 @@ class DownloadTask(AppStruct):
     track_count: int | None = None
     track_duration_seconds: float | None = None
     download_client: str = "slskd"
-    # Acquisition source ("soulseek" | "usenet"); the fixed v1 map is
+    # Acquisition source ("tidal" | "soulseek" | "usenet"); the map is
     # soulseek→slskd, usenet→sabnzbd. Drives the "via album NZB" UI label and
     # source-scoped failover. Defaulted so old rows decode as soulseek.
     source: str = "soulseek"

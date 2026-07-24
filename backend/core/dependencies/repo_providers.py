@@ -759,6 +759,32 @@ def build_sabnzbd_download_client(url: str, api_key: str) -> "SabnzbdDownloadCli
 
 
 @singleton
+def get_tidarr_client() -> "TidarrClient":
+    from repositories.tidarr import TidarrClient
+
+    cfg = get_preferences_service().get_tidarr_connection_raw()
+    http = HttpClientFactory.get_client(name="tidarr", timeout=30.0, connect_timeout=5.0)
+    return TidarrClient(http, cfg.url, cfg.api_key, cfg.country_code)
+
+
+@singleton
+def get_tidarr_download_client() -> "TidarrDownloadClient":
+    from repositories.tidarr.tidarr_download_client import TidarrDownloadClient
+
+    return TidarrDownloadClient(get_tidarr_client())
+
+
+def build_tidarr_download_client(
+    url: str, api_key: str, country_code: str = "US"
+) -> "TidarrDownloadClient":
+    from repositories.tidarr import TidarrClient
+    from repositories.tidarr.tidarr_download_client import TidarrDownloadClient
+
+    http = HttpClientFactory.get_client(name="tidarr-verify", timeout=30.0, connect_timeout=5.0)
+    return TidarrDownloadClient(TidarrClient(http, url, api_key, country_code))
+
+
+@singleton
 def get_download_client_repository() -> "DownloadClientProtocol":
     from core.exceptions import ConfigurationError
 
@@ -780,12 +806,14 @@ def get_download_client(client_type: str) -> "DownloadClientProtocol":
             return get_slskd_repository()
         case "sabnzbd":
             return get_sabnzbd_download_client()
+        case "tidarr":
+            return get_tidarr_download_client()
         case other:
             raise ConfigurationError(f"Unknown download client type: {other!r}")
 
 
 # Fixed v1 source → client_type map (assembled in get_sources, dispatched here).
-_SOURCE_CLIENT_TYPE = {"soulseek": "slskd", "usenet": "sabnzbd"}
+_SOURCE_CLIENT_TYPE = {"tidal": "tidarr", "soulseek": "slskd", "usenet": "sabnzbd"}
 
 
 def get_download_client_for_source(source: str) -> "DownloadClientProtocol":

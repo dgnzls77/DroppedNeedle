@@ -8,6 +8,8 @@ import type {
 	DownloadPolicySettings,
 	SabnzbdConnectionSettings,
 	SabnzbdTestResult,
+	TidarrConnectionSettings,
+	TestConnectionResult,
 	SourcePriority,
 	WantedWatcherSettings
 } from '$lib/types';
@@ -45,6 +47,16 @@ const sabnzbdOptions = () =>
 
 export const getSabnzbdConfigQuery = () => createQuery(() => sabnzbdOptions());
 
+const tidarrOptions = () =>
+	queryOptions({
+		staleTime: CACHE_TTL.LIBRARY_NATIVE,
+		queryKey: DownloadQueryKeyFactory.tidarr(),
+		queryFn: ({ signal }) =>
+			api.global.get<TidarrConnectionSettings>(API.downloadClients.tidarr(), { signal })
+	});
+
+export const getTidarrConfigQuery = () => createQuery(() => tidarrOptions());
+
 const policyOptions = () =>
 	queryOptions({
 		staleTime: CACHE_TTL.LIBRARY_NATIVE,
@@ -59,9 +71,25 @@ export const getDownloadPolicyQuery = (getEnabled: () => boolean = () => true) =
 	createQuery(() => ({ ...policyOptions(), enabled: getEnabled() }));
 
 async function invalidateClients() {
+	await invalidateQueriesWithPersister({ queryKey: DownloadQueryKeyFactory.tidarr() });
 	await invalidateQueriesWithPersister({ queryKey: DownloadQueryKeyFactory.sabnzbd() });
 	await invalidateQueriesWithPersister({ queryKey: DownloadQueryKeyFactory.clientStatus() });
 	await invalidateQueriesWithPersister({ queryKey: HomeQueryKeyFactory.prefix });
+}
+
+export function saveTidarrConfig() {
+	return createMutation(() => ({
+		mutationFn: (config: TidarrConnectionSettings) =>
+			api.global.put<TidarrConnectionSettings>(API.downloadClients.tidarr(), config),
+		onSuccess: invalidateClients
+	}));
+}
+
+export function testTidarr() {
+	return createMutation(() => ({
+		mutationFn: (config: TidarrConnectionSettings) =>
+			api.global.post<TestConnectionResult>(API.downloadClients.tidarrTest(), config)
+	}));
 }
 
 export function saveSabnzbdConfig() {

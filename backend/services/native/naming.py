@@ -29,7 +29,7 @@ _RESERVED_NAMES = frozenset(
 
 
 class NamingTemplateEngine:
-    DEFAULT = "{albumartist}/{album} ({year})/{disc:02d}{track:02d} {title}.{ext}"
+    DEFAULT = "{albumartist}/{album}/{disc}{track:02d} - {title}.{ext}"
 
     # Plain variables (format specs ignored) and the two that honour ``:fmt``.
     _VARIABLES = frozenset(

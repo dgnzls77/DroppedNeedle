@@ -8,8 +8,10 @@ from fastapi import FastAPI, HTTPException
 from api.v1.routes import download_clients
 from api.v1.schemas.settings import (
     SABNZBD_API_KEY_MASK,
+    TIDARR_API_KEY_MASK,
     DownloadPolicySettings,
     SabnzbdConnectionSettings,
+    TidarrConnectionSettings,
     WantedWatcherSettings,
 )
 from core.dependencies import get_preferences_service
@@ -27,6 +29,12 @@ def _prefs():
         enabled=True, url="http://sab:8080", api_key="real-key"
     )
     prefs.get_download_policy.return_value = DownloadPolicySettings()
+    prefs.get_tidarr_connection.return_value = TidarrConnectionSettings(
+        enabled=True, url="http://tidarr:8484", api_key=TIDARR_API_KEY_MASK
+    )
+    prefs.get_tidarr_connection_raw.return_value = TidarrConnectionSettings(
+        enabled=True, url="http://tidarr:8484", api_key="real-key"
+    )
     prefs.save_sabnzbd_connection.return_value = None
     prefs.save_download_policy.return_value = None
     prefs.get_wanted_settings.return_value = WantedWatcherSettings()
@@ -57,6 +65,32 @@ def test_get_sabnzbd_non_admin_forbidden():
     app = _app()
     app.dependency_overrides[_get_current_admin] = _deny_admin
     assert build_test_client(app).get("/download-clients/sabnzbd").status_code == 403
+
+
+def test_get_tidarr_admin_masked():
+    app = _app()
+    app.dependency_overrides[_get_current_admin] = mock_admin_user
+    resp = build_test_client(app).get("/download-clients/tidarr")
+    assert resp.status_code == 200
+    assert resp.json()["api_key"] == TIDARR_API_KEY_MASK
+
+
+def test_test_tidarr_uses_stored_key_for_mask(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.health_check = AsyncMock(
+        return_value=ServiceStatus(status="ok", version="available", message="Tidarr connected")
+    )
+    build = MagicMock(return_value=fake_client)
+    monkeypatch.setattr(download_clients, "build_tidarr_download_client", build)
+    app = _app()
+    app.dependency_overrides[_get_current_admin] = mock_admin_user
+    response = build_test_client(app).post(
+        "/download-clients/tidarr/test",
+        json={"url": "http://tidarr:8484", "api_key": TIDARR_API_KEY_MASK},
+    )
+    assert response.status_code == 200
+    assert response.json()["valid"] is True
+    build.assert_called_once_with("http://tidarr:8484", "real-key", "US")
 
 
 def test_get_policy_admin():

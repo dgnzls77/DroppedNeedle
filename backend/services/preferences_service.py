@@ -31,13 +31,16 @@ from api.v1.schemas.settings import (
     ConnectAppsSettings,
     ACOUSTID_KEY_MASK,
     DOWNLOAD_CLIENT_API_KEY_MASK,
+    LEGACY_DEFAULT_NAMING_TEMPLATE,
     INDEXER_API_KEY_MASK,
     SABNZBD_API_KEY_MASK,
+    TIDARR_API_KEY_MASK,
     LIDARR_IMPORT_API_KEY_MASK,
     DownloadPolicySettings,
     LidarrImportConnectionSettings,
     NewznabIndexerSettings,
     SabnzbdConnectionSettings,
+    TidarrConnectionSettings,
     SpotifySettings,
     SPOTIFY_SECRET_MASK,
     EventsSettings,
@@ -315,21 +318,21 @@ class PreferencesService:
 
     def get_source_priority(self) -> list[str]:
         """The order acquisition sources are tried (D3). Defaults to Soulseek-first;
-        unknown/missing sources are appended so the list always covers both."""
+        unknown/missing sources are appended so the list always covers all sources."""
         raw = self._load_config().get("source_priority")
         order = (
-            [s for s in raw if s in ("soulseek", "usenet")]
+            [s for s in raw if s in ("tidal", "soulseek", "usenet")]
             if isinstance(raw, list)
             else []
         )
-        for source in ("soulseek", "usenet"):
+        for source in ("tidal", "soulseek", "usenet"):
             if source not in order:
                 order.append(source)
         return order
 
     def save_source_priority(self, order: list[str]) -> None:
-        clean = [s for s in order if s in ("soulseek", "usenet")]
-        for source in ("soulseek", "usenet"):
+        clean = [s for s in order if s in ("tidal", "soulseek", "usenet")]
+        for source in ("tidal", "soulseek", "usenet"):
             if source not in clean:
                 clean.append(source)
         config = self._load_config().copy()
@@ -337,6 +340,52 @@ class PreferencesService:
         self._save_config(config)
 
     # --- SABnzbd download client (D5) - in the download_clients map -----------------
+
+    def get_tidarr_connection(self) -> TidarrConnectionSettings:
+        data = self._load_config().get("download_clients", {}).get("tidarr", {})
+        settings = (
+            msgspec.convert(data, type=TidarrConnectionSettings)
+            if data
+            else TidarrConnectionSettings()
+        )
+        if settings.api_key:
+            settings.api_key = TIDARR_API_KEY_MASK
+        return settings
+
+    def get_tidarr_connection_raw(self) -> TidarrConnectionSettings:
+        data = self._load_config().get("download_clients", {}).get("tidarr", {})
+        settings = (
+            msgspec.convert(data, type=TidarrConnectionSettings)
+            if data
+            else TidarrConnectionSettings()
+        )
+        stored = data.get("api_key", "")
+        settings.api_key = decrypt(stored)[0].strip() if stored else ""
+        return settings
+
+    def save_tidarr_connection(self, settings: TidarrConnectionSettings) -> None:
+        try:
+            config = self._load_config().copy()
+            clients = dict(config.get("download_clients", {}))
+            current = clients.get("tidarr", {})
+            api_key = settings.api_key.strip()
+            if api_key == TIDARR_API_KEY_MASK:
+                api_key = current.get("api_key", "")
+            elif api_key:
+                api_key = encrypt(api_key)
+            clients["tidarr"] = {
+                "enabled": settings.enabled,
+                "client_type": "tidarr",
+                "url": settings.url,
+                "api_key": api_key,
+                "country_code": settings.country_code,
+            }
+            config["download_clients"] = clients
+            self._save_config(config)
+            logger.info("Saved Tidarr connection settings")
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to save Tidarr settings: %s", e)
+            raise ConfigurationError(f"Failed to save Tidarr settings: {e}")
 
     def get_sabnzbd_connection(self) -> SabnzbdConnectionSettings:
         """SABnzbd connection with the ``api_key`` MASKED (safe for API responses)."""
@@ -545,10 +594,16 @@ class PreferencesService:
             and any(i.enabled for i in self.get_indexers())
         )
 
+    def is_tidarr_ready(self) -> bool:
+        tidarr = self.get_tidarr_connection_raw()
+        return tidarr.enabled and bool(tidarr.url and tidarr.api_key)
+
     def is_builtin_download_ready(self) -> bool:
         """A user-configured download client (Soulseek OR Usenet) is set up.
         Chooses the dispatcher; dies with those clients in 2.0."""
-        return self.is_soulseek_ready() or self.is_usenet_ready()
+        return (
+            self.is_tidarr_ready() or self.is_soulseek_ready() or self.is_usenet_ready()
+        )
 
     def is_download_source_ready(self) -> bool:
         """At least one acquisition source is set up: Soulseek, Usenet, or Free
@@ -1068,6 +1123,13 @@ class PreferencesService:
         if "library_roots" in data:
             try:
                 settings = msgspec.convert(data, type=TypedLibrarySettings)
+                # Existing installs retain their saved value when schema defaults change.
+                # Migrate only the former built-in default; never overwrite a custom template.
+                if settings.naming_template == LEGACY_DEFAULT_NAMING_TEMPLATE:
+                    settings.naming_template = DEFAULT_NAMING_TEMPLATE
+                    new_config = config.copy()
+                    new_config["library_settings"] = to_jsonable(settings)
+                    self._save_config(new_config)
                 from services.native.library_policy_resolver import (
                     LibraryPolicyResolver,
                 )

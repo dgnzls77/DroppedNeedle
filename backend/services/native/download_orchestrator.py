@@ -65,7 +65,7 @@ from services.native.track_matcher import TrackMatcher
 logger = logging.getLogger(__name__)
 
 # Fixed v1 source -> client_type map (the DownloadTask.download_client value).
-_CLIENT_FOR_SOURCE = {"soulseek": "slskd", "usenet": "sabnzbd"}
+_CLIENT_FOR_SOURCE = {"tidal": "tidarr", "soulseek": "slskd", "usenet": "sabnzbd"}
 
 # 6-hour ceiling on a single download's poll loop (absolute backstop; the
 # minutes-scale stall/queued watchdogs normally resolve a stuck transfer long
@@ -185,7 +185,12 @@ class DownloadOrchestrator:
         usenet_scorer=None,  # NewznabReleaseScorer | None
         usenet_enabled: bool = False,  # an indexer AND SABnzbd are both enabled
         soulseek_enabled: bool = True,  # the slskd enable toggle (separate from is_configured)
-        source_priority=None,  # list[str] | None - default ["soulseek", "usenet"]
+        source_priority=None,
+        tidarr_client=None,
+        tidarr_api=None,
+        tidarr_enabled: bool = False,
+        library_scanner=None,
+        library_paths=None,
         album_service=None,  # AlbumService | None - for the Usenet MB tracklist
         usenet_category: str | None = None,
         usenet_priority: int | None = None,
@@ -206,7 +211,8 @@ class DownloadOrchestrator:
             usenet_enabled and usenet_indexer is not None and usenet_client is not None
         )
         self._soulseek_enabled = soulseek_enabled
-        self._source_priority = source_priority or ["soulseek", "usenet"]
+        self._source_priority = source_priority or ["tidal", "soulseek", "usenet"]
+        self._tidarr_enabled = tidarr_enabled and tidarr_client is not None and tidarr_api is not None
         self._store = download_store
         self._library = library_manager
         # Coverage completeness (P4): the requested release's expected tracklist,
@@ -282,6 +288,20 @@ class DownloadOrchestrator:
                 min_release_age_seconds=usenet_min_release_age_minutes * 60.0,
                 library=library_manager,
             )
+        if tidarr_client is not None and tidarr_api is not None and library_scanner is not None:
+            from services.native.acquisition.strategy import TidarrStrategy
+
+            self._strategies["tidal"] = TidarrStrategy(
+                client=tidarr_client,
+                tidarr=tidarr_api,
+                store=download_store,
+                scanner=library_scanner,
+                library=library_manager,
+                library_paths=library_paths or [],
+                staging=self._staging,
+                manifest_codec=manifest_codec,
+                naming_template=naming_template,
+            )
 
     def dispatch(self, task_id: str) -> "asyncio.Task":
         """Run ``process_task`` for ``task_id`` in the background (AUD-3): wrapped in
@@ -341,13 +361,11 @@ class DownloadOrchestrator:
         )
 
         try:
-            if not self._source_enabled("soulseek") and not self._source_enabled(
-                "usenet"
-            ):
+            if not any(self._source_enabled(source) for source in ("tidal", "soulseek", "usenet")):
                 # Disabled-but-configured slskd shouldn't read as "not configured".
                 if self._client.is_configured():
                     raise OrchestrationError(
-                        "No download source is enabled - turn on slskd or Usenet in Settings"
+                        "No download source is enabled - turn on Tidarr, slskd, or Usenet in Settings"
                     )
                 raise OrchestrationError(
                     "Download client is not configured - check the slskd URL in Settings"
@@ -378,6 +396,8 @@ class DownloadOrchestrator:
             await self._sync_request_on_terminal(task, DownloadStatus.FAILED)
 
     def _source_enabled(self, source: str) -> bool:
+        if source == "tidal":
+            return self._tidarr_enabled
         if source == "soulseek":
             # Both the enable toggle AND a usable URL/key are required - a disabled-but-
             # configured slskd must not be routed to just because it's still configured.
@@ -391,7 +411,7 @@ class DownloadOrchestrator:
         was tried, never a source that's switched off."""
         return [
             name
-            for source, name in (("soulseek", "Soulseek"), ("usenet", "Usenet"))
+            for source, name in (("tidal", "Tidal"), ("soulseek", "Soulseek"), ("usenet", "Usenet"))
             if self._source_enabled(source)
         ]
 

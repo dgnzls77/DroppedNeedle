@@ -10,14 +10,24 @@ import logging
 
 from fastapi import APIRouter, Depends
 
-from api.v1.schemas.download import SabnzbdTestResponse, SourcePriority
+from api.v1.schemas.download import (
+    SabnzbdTestResponse,
+    SourcePriority,
+    TestConnectionResponse,
+)
 from api.v1.schemas.settings import (
     SABNZBD_API_KEY_MASK,
+    TIDARR_API_KEY_MASK,
     DownloadPolicySettings,
     SabnzbdConnectionSettings,
+    TidarrConnectionSettings,
     WantedWatcherSettings,
 )
-from core.dependencies import build_sabnzbd_download_client, get_preferences_service
+from core.dependencies import (
+    build_sabnzbd_download_client,
+    build_tidarr_download_client,
+    get_preferences_service,
+)
 from core.exceptions import ExternalServiceError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from middleware import CurrentAdminDep
@@ -41,6 +51,8 @@ def _clear_download_client_cache() -> None:
         get_newznab_release_scorer,
         get_sabnzbd_client,
         get_sabnzbd_download_client,
+        get_tidarr_client,
+        get_tidarr_download_client,
         get_track_matcher,
         get_target_download_orchestrator,
         get_target_download_service,
@@ -50,6 +62,8 @@ def _clear_download_client_cache() -> None:
     for provider in (
         get_sabnzbd_client,
         get_sabnzbd_download_client,
+        get_tidarr_client,
+        get_tidarr_download_client,
         get_album_preflight_scorer,
         get_track_matcher,
         get_newznab_release_scorer,
@@ -63,6 +77,41 @@ def _clear_download_client_cache() -> None:
         get_target_download_service,
     ):
         provider.cache_clear()
+
+
+@router.get("/tidarr", response_model=TidarrConnectionSettings)
+async def get_tidarr(_: CurrentAdminDep, preferences=Depends(get_preferences_service)):
+    return preferences.get_tidarr_connection()
+
+
+@router.put("/tidarr", response_model=TidarrConnectionSettings)
+async def update_tidarr(
+    _: CurrentAdminDep,
+    settings: TidarrConnectionSettings = MsgSpecBody(TidarrConnectionSettings),
+    preferences=Depends(get_preferences_service),
+):
+    preferences.save_tidarr_connection(settings)
+    _clear_download_client_cache()
+    return preferences.get_tidarr_connection()
+
+
+@router.post("/tidarr/test", response_model=TestConnectionResponse)
+async def test_tidarr(
+    _: CurrentAdminDep,
+    settings: TidarrConnectionSettings = MsgSpecBody(TidarrConnectionSettings),
+    preferences=Depends(get_preferences_service),
+):
+    api_key = settings.api_key
+    if api_key == TIDARR_API_KEY_MASK:
+        api_key = preferences.get_tidarr_connection_raw().api_key
+    client = build_tidarr_download_client(settings.url, api_key, settings.country_code)
+    status = await client.health_check()
+    return TestConnectionResponse(
+        valid=status.status == "ok",
+        version=status.version,
+        message=status.message
+        or ("Tidarr connected" if status.status == "ok" else "Tidarr unreachable"),
+    )
 
 
 @router.get("/sabnzbd", response_model=SabnzbdConnectionSettings)

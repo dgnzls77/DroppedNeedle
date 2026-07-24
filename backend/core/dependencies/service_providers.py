@@ -2040,6 +2040,8 @@ def _build_download_orchestrator(
         get_download_store,
         get_newznab_indexer,
         get_sabnzbd_download_client,
+        get_tidarr_client,
+        get_tidarr_download_client,
         get_slskd_indexer,
         get_wanted_store,
     )
@@ -2050,6 +2052,7 @@ def _build_download_orchestrator(
     dc = prefs.get_download_client_settings_raw()
     sab = prefs.get_sabnzbd_connection_raw()
     usenet_enabled = prefs.is_usenet_ready()
+    tidarr_enabled = prefs.is_tidarr_ready()
     # manifest is metadata only (audio lands in the client's dir), so staging need not be
     # on the library filesystem; default it under cache_dir
     staging_path = (
@@ -2086,6 +2089,11 @@ def _build_download_orchestrator(
         usenet_enabled=usenet_enabled,
         soulseek_enabled=dc.enabled,
         source_priority=prefs.get_source_priority(),
+        tidarr_client=get_tidarr_download_client(),
+        tidarr_api=get_tidarr_client(),
+        tidarr_enabled=tidarr_enabled,
+        library_scanner=get_library_scanner(),
+        library_paths=[root.path for root in lib.library_roots],
         album_service=album_service,
         usenet_category=sab.category,
         usenet_priority=sab.priority,
@@ -2147,8 +2155,8 @@ def _build_download_service(
     dc = prefs.get_download_client_settings_raw()
     policy = prefs.get_download_policy()
     usenet_enabled = prefs.is_usenet_ready()
-    # The service is "enabled" if ANY source can act (slskd OR usenet), so a Usenet-only
-    # install isn't blocked by the slskd-disabled guard.
+    tidarr_enabled = prefs.is_tidarr_ready()
+    # The service is enabled when any configured acquisition source can act.
     return DownloadService(
         download_client=get_download_client_repository(),
         indexer=get_slskd_indexer(),
@@ -2164,7 +2172,7 @@ def _build_download_service(
         track_matcher=get_track_matcher(),
         auto_accept_threshold=policy.preflight_score_auto_accept,
         manual_threshold=policy.preflight_score_manual_min,
-        enabled=dc.enabled or usenet_enabled,
+        enabled=tidarr_enabled or dc.enabled or usenet_enabled,
         usenet_indexer=get_newznab_indexer(),
         usenet_scorer=get_newznab_release_scorer(),
         usenet_enabled=usenet_enabled,

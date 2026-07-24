@@ -33,7 +33,7 @@ def engine() -> NamingTemplateEngine:
 
 def test_default_template_renders_expected_path(engine):
     result = engine.format_path(engine.DEFAULT, _tag(), "flac")
-    assert result == Path("Radiohead/OK Computer (1997)/0101 Airbag.flac")
+    assert result == Path("Radiohead/OK Computer/101 - Airbag.flac")
 
 
 def test_albumartist_falls_back_to_artist(engine):

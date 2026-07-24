@@ -34,6 +34,8 @@ from services.native.file_processor import (
     FileFailure,
     ProcessResult,
 )
+from services.native.title_match import fold
+from rapidfuzz import fuzz
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +347,106 @@ class SoulseekStrategy:
         if result.succeeded:
             await self._store.set_final_path(task.id, str(Path(result.succeeded[0]).parent))
         return result, len(result.succeeded) + len(result.failed)
+
+
+class TidarrStrategy:
+    """Tidal acquisition delegated to Tidarr; Tidarr remains the file-workflow owner."""
+
+    name = "tidal"
+    applies_queued_timeout = False
+    has_local_disk_faults = False
+
+    def __init__(self, *, client, tidarr, store, scanner, library, library_paths,
+                 staging, manifest_codec, naming_template):
+        self._client = client
+        self._tidarr = tidarr
+        self._store = store
+        self._scanner = scanner
+        self._library = library
+        self._library_paths = [Path(p) for p in library_paths]
+        self._staging = Path(staging)
+        self._manifest_codec = manifest_codec
+        self._naming_template = naming_template
+
+    @property
+    def client(self):  # noqa: ANN201
+        return self._client
+
+    def candidate_identity(self, candidate) -> str:  # noqa: ANN001
+        return candidate.tidal_id or candidate.username
+
+    def is_cancelable(self, task, manifest) -> bool:  # noqa: ANN001, ARG002
+        return manifest.handle is not None
+
+    def local_fault_message(self, attempt_mount: bool) -> str:  # noqa: ARG002
+        return "Tidarr could not finish its library workflow"
+
+    async def maybe_blocklist_on_failure(self, task, status, *, completed, enumerated_any):  # noqa: ANN001, ANN201, ARG002
+        return
+
+    async def search_and_score(self, task, *, timeout, auto, manual):  # noqa: ANN001, ANN201, ARG002
+        media_type = "track" if task.download_type == "track" else "album"
+        wanted_title = task.track_title if media_type == "track" else task.album_title
+        query = " ".join(part for part in (task.artist_name, wanted_title) if part)
+        found = await self._tidarr.search(query, media_type)
+        candidates: list[ScoredCandidate] = []
+        for item in found:
+            artist_score = fuzz.ratio(fold(task.artist_name), fold(item.artist)) / 100.0
+            title_score = fuzz.ratio(fold(wanted_title or ""), fold(item.title)) / 100.0
+            album_score = 1.0
+            if media_type == "track" and task.album_title and item.album:
+                album_score = fuzz.ratio(fold(task.album_title), fold(item.album)) / 100.0
+            year_score = 1.0 if not task.year or not item.year else max(0.0, 1.0 - abs(task.year - item.year) * 0.2)
+            score = 0.45 * artist_score + 0.4 * title_score + 0.1 * album_score + 0.05 * year_score
+            tier = "auto" if score >= auto else "manual" if score >= manual else "rejected"
+            candidates.append(ScoredCandidate(
+                source="tidal", username="Tidarr", parent_directory=item.album or item.title,
+                tidal_id=item.id, tidal_title=item.title, tidal_artist=item.artist,
+                tidal_media_type=media_type,
+                coherence=score, file_confidence=score, final_score=score, tier=tier,
+            ))
+        return sorted(candidates, key=lambda c: c.final_score, reverse=True)
+
+    async def enqueue(self, task, candidate, *, strict_track_duration, hold_on_wrong_track=False):  # noqa: ANN001, ANN201, ARG002
+        media_type = candidate.tidal_media_type or ("track" if task.download_type == "track" else "album")
+        tidal_id = candidate.tidal_id or candidate.username
+        await self._store.update_status(
+            task.id, "downloading", files_total=task.track_count or 1, started_at=time.time()
+        )
+        manifest = DownloadManifest(
+            task_id=task.id,
+            handle=TaskHandle(source="tidarr", username=tidal_id, job_name=media_type),
+            origin=task.origin,
+            release_group_mbid=task.release_group_mbid,
+            release_mbid=task.release_mbid,
+            artist_mbid=task.artist_mbid,
+            artist_name=task.artist_name,
+            album_title=task.album_title,
+            year=task.year,
+            is_track=task.download_type == "track",
+            naming_template=self._naming_template,
+            target_files=[],
+        )
+        self._staging.joinpath(task.id).mkdir(parents=True, exist_ok=True)
+        path = self._staging / task.id / "manifest.json"
+        path.write_bytes(self._manifest_codec.encode(manifest))
+        handle = await self._client.enqueue(EnqueueRequest(
+            task_id=task.id, source="tidarr", nzb_url=tidal_id, job_name=media_type
+        ))
+        manifest.handle = handle
+        path.write_bytes(self._manifest_codec.encode(manifest))
+
+    async def import_files(self, task, manifest, *, only_filenames=None, completed=False):  # noqa: ANN001, ANN201, ARG002
+        if not completed:
+            return ProcessResult(succeeded=[], failed=[]), 0
+        # Tidarr has already run Tiddl, Beets, ReplayGain and the final move. An
+        # incremental scan indexes those final files without renaming or importing them.
+        await self._scanner.scan(self._library_paths)
+        rows = await self._library.get_file_rows_for_album(task.release_group_mbid)
+        paths = [str(row["file_path"]) for row in rows if row.get("file_path")]
+        if paths:
+            await self._store.set_final_path(task.id, str(Path(paths[0]).parent))
+        return ProcessResult(succeeded=paths, failed=[]), len(paths)
 
 
 class UsenetStrategy:
