@@ -137,6 +137,21 @@ beforeEach(() => {
 });
 
 describe('SettingsLibrary target policy UI', () => {
+	it('accepts a legacy settings response without typed library roots', async () => {
+		h.settings = {
+			data: {
+				...structuredClone(baseSettings),
+				library_roots: undefined
+			},
+			isLoading: false,
+			isError: false
+		};
+
+		render(SettingsLibrary);
+
+		await expect.element(page.getByRole('region', { name: 'Library roots' })).toBeVisible();
+	});
+
 	it('shows root inheritance policy, counts, path, and unavailable state', async () => {
 		render(SettingsLibrary);
 		await expect.element(page.getByRole('heading', { name: 'Archive' })).toBeVisible();
