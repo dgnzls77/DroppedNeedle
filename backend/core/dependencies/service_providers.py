@@ -2041,7 +2041,7 @@ def _build_download_orchestrator(
         tidarr_api=get_tidarr_client(),
         tidarr_enabled=tidarr_enabled,
         library_scanner=get_library_scanner(),
-        library_paths=lib.library_paths,
+        library_paths=[root.path for root in lib.library_roots],
         album_service=album_service,
         usenet_category=sab.category,
         usenet_priority=sab.priority,
