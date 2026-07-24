@@ -19,7 +19,7 @@
 	const tidarrQuery = getTidarrConfigQuery();
 	const indexersQuery = getIndexersQuery();
 
-	const hasLibraryPath = $derived((libQuery.data?.library_roots.length ?? 0) > 0);
+	const hasLibraryPath = $derived((libQuery.data?.library_roots?.length ?? 0) > 0);
 	const slskdConfigured = $derived(Boolean(dcQuery.data?.url && dcQuery.data?.api_key));
 	const sabnzbdEnabled = $derived(sabQuery.data?.enabled === true && Boolean(sabQuery.data?.url));
 	const tidarrEnabled = $derived(
