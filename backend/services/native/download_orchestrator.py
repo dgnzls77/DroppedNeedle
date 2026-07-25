@@ -61,6 +61,7 @@ from services.native.file_processor import (
 )
 from services.native.library_manager import LibraryManager
 from services.native.track_matcher import TrackMatcher
+from services.native.title_match import fold
 
 logger = logging.getLogger(__name__)
 
@@ -734,6 +735,7 @@ class DownloadOrchestrator:
         wrong_track = False
         source_missing = False
         import_failed = False
+        exhausted_sources: set[str] = set()
         while True:
             # resume's first iteration polls the transfers a restart left behind (no
             # enqueue), so the no-transfer fast-fail must not apply there - those
@@ -862,6 +864,9 @@ class DownloadOrchestrator:
                 if attempts < self._max_failover
                 else None
             )
+            if nxt is None and attempts < self._max_failover:
+                exhausted_sources.add(task.source)
+                nxt = await self._advance_source(task, exhausted_sources)
             if nxt is None:
                 # Every source for a single track failed the canonical-duration gate:
                 # the MB length is probably wrong (not the files), so re-pull the best
@@ -882,6 +887,60 @@ class DownloadOrchestrator:
                 "status",
                 {"status": DownloadStatus.RETRYING, "attempt": attempts},
             )
+
+    async def _advance_source(self, task, exhausted_sources: set[str]):  # noqa: ANN001, ANN201
+        """Search the next configured source after an accepted release fails.
+
+        Initial search stops as soon as one source auto-accepts. Without this second
+        stage, a Tidal release that vanished, under-delivered, or failed its library
+        verification never reached the configured Soulseek fallback.
+        """
+        if task.search_job_id is None:
+            return None
+        pooled = await self._store.get_search_job_candidates(task.search_job_id)
+        for source in self._source_priority:
+            if source in exhausted_sources:
+                continue
+            if not self._source_enabled(source) or not await self._source_available(source):
+                exhausted_sources.add(source)
+                continue
+            candidates = await self._search_and_score(task, source)
+            offset = len(pooled)
+            pooled.extend(candidates)
+            await self._store.set_search_job_candidates(task.search_job_id, pooled)
+            logger.info(
+                "download.failover.search.completed",
+                extra={
+                    "task_id": task.id,
+                    "source": source,
+                    "candidates_count": len(candidates),
+                    "top_score": candidates[0].final_score if candidates else 0.0,
+                },
+            )
+            auto_match = next(
+                (
+                    (index, candidate)
+                    for index, candidate in enumerate(candidates)
+                    if candidate.tier == "auto"
+                ),
+                None,
+            )
+            if auto_match is None:
+                exhausted_sources.add(source)
+                continue
+            index, candidate = auto_match
+            await self._store.link_picked_candidate(
+                task.id,
+                task.search_job_id,
+                offset + index,
+                candidate.username,
+                candidate.parent_directory,
+                candidate.final_score,
+                source=candidate.source,
+                download_client=_CLIENT_FOR_SOURCE.get(candidate.source, "slskd"),
+            )
+            return await self._store.get_task(task.id)
+        return None
 
     async def _fallback_track_repull(self, task) -> None:  # noqa: ANN001 - DownloadTask
         """Last resort for a per-track download whose every candidate was rejected on
@@ -989,6 +1048,11 @@ class DownloadOrchestrator:
             # Stay within the task's source (never cross Soulseek<->Usenet in the pooled
             # job) and skip an identity we've already tried (review M2).
             if cand.source != task.source:
+                continue
+            # A manual-tier result is visible for an explicit user pick only. Automatic
+            # failover must not turn a rejected Deluxe/wrong-album alternative into the
+            # next download merely because the source's best candidate failed.
+            if cand.tier != "auto":
                 continue
             if self._candidate_source_identity(cand) in tried_usernames:
                 continue
@@ -1160,12 +1224,36 @@ class DownloadOrchestrator:
         return bool(await result) if hasattr(result, "__await__") else bool(result)
 
     async def _await_retry_catalog(self, task) -> None:  # noqa: ANN001
-        if (
-            task.origin == "retry"
-            and self._library_scanner is not None
-            and await self._catalog_scan_running()
-        ):
-            await self._library_scanner.scan(self._library_paths)
+        if task.origin != "retry" or self._library_scanner is None:
+            return
+        # A retry used to queue and await a second full-library scan whenever one was
+        # already running. On a large library that held the task at "queued" for hours
+        # before it even searched Tidarr/Soulseek. The current scan will update the
+        # shared index in the background; do not block acquisition on its completion.
+        if await self._catalog_scan_running():
+            logger.info(
+                "download.retry_scan_skipped",
+                extra={"task_id": task.id, "reason": "scan_already_running"},
+            )
+            return
+        artist_key = fold(task.artist_name)
+        scan_paths: list[Path] = []
+        for configured_root in self._library_paths:
+            root = Path(configured_root)
+            try:
+                exact = root / task.artist_name
+                if exact.is_dir():
+                    scan_paths.append(exact)
+                    continue
+                scan_paths.extend(
+                    child
+                    for child in root.iterdir()
+                    if child.is_dir() and fold(child.name) == artist_key
+                )
+            except OSError:
+                continue
+        if scan_paths:
+            await self._library_scanner.scan(scan_paths)
 
     async def _library_satisfies(self, task, *, context: str) -> bool:  # noqa: ANN001
         try:

@@ -1,5 +1,6 @@
 """DownloadClientProtocol adapter for jobs owned and post-processed by Tidarr."""
 
+import time
 from pathlib import Path
 
 from models.common import ServiceStatus
@@ -16,6 +17,8 @@ from .tidarr_client import TidarrClient
 class TidarrDownloadClient:
     def __init__(self, client: TidarrClient):
         self._client = client
+        self._submitted_at: dict[str, float] = {}
+        self._observed: set[str] = set()
 
     @property
     def client_name(self) -> str:
@@ -35,12 +38,40 @@ class TidarrDownloadClient:
         tidal_id = request.nzb_url or ""
         media_type = request.job_name or "album"
         await self._client.enqueue(tidal_id, media_type)
+        self._submitted_at[tidal_id] = time.monotonic()
         return TaskHandle(source="tidarr", username=tidal_id, job_name=media_type)
 
     async def get_status(self, handle: TaskHandle) -> DownloadTaskStatus:
         item = await self._client.queue_item(handle.username)
         if item is None:
+            submitted_at = self._submitted_at.get(handle.username)
+            # Tidarr removes terminal jobs from /api/queue/list. A job we previously
+            # observed, or one restored after a DroppedNeedle restart, has therefore
+            # reached its terminal handoff. A just-submitted job gets a short
+            # materialisation grace so a slow queue insert is not mistaken for success.
+            if handle.username in self._observed or submitted_at is None:
+                self._submitted_at.pop(handle.username, None)
+                self._observed.discard(handle.username)
+                return DownloadTaskStatus(
+                    task_id=handle.username,
+                    status="completed",
+                    files_total=1,
+                    files_completed=1,
+                    progress_percent=100.0,
+                    matched_transfers=1,
+                )
+            if time.monotonic() - submitted_at >= 30.0:
+                self._submitted_at.pop(handle.username, None)
+                return DownloadTaskStatus(
+                    task_id=handle.username,
+                    status="completed",
+                    files_total=1,
+                    files_completed=1,
+                    progress_percent=100.0,
+                    matched_transfers=1,
+                )
             return DownloadTaskStatus(task_id=handle.username, status="queued")
+        self._observed.add(handle.username)
         raw = str(item.get("status") or "").lower()
         status = {
             "finished": "completed",

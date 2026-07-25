@@ -521,7 +521,24 @@ class TidarrStrategy:
             return ProcessResult(succeeded=[], failed=[]), 0
         # Tidarr has already run Tiddl, Beets, ReplayGain and the final move. An
         # incremental scan indexes those final files without renaming or importing them.
-        await self._scanner.scan(self._library_paths)
+        # Scope it to the artist whenever possible: scanning every library file after
+        # one album completes made downloads appear stuck for hours.
+        artist_key = fold(task.artist_name)
+        scan_paths: list[Path] = []
+        for root in self._library_paths:
+            try:
+                exact = root / task.artist_name
+                if exact.is_dir():
+                    scan_paths.append(exact)
+                    continue
+                scan_paths.extend(
+                    child
+                    for child in root.iterdir()
+                    if child.is_dir() and fold(child.name) == artist_key
+                )
+            except OSError:
+                continue
+        await self._scanner.scan(scan_paths or self._library_paths)
         rows = await self._library.get_file_rows_for_album(task.release_group_mbid)
         paths = [str(row["file_path"]) for row in rows if row.get("file_path")]
         if paths:

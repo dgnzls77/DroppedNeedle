@@ -175,3 +175,31 @@ async def test_tidarr_standard_original_beats_deluxe_remaster(tmp_path):
     assert candidates[0].tier == "auto"
     assert candidates[1].tidal_id == "deluxe-remaster"
     assert candidates[1].tier == "manual"
+
+
+@pytest.mark.asyncio
+async def test_tidarr_completion_scans_only_matching_artist_folder(tmp_path):
+    root = tmp_path / "music"
+    artist = root / "Example Artist"
+    artist.mkdir(parents=True)
+    scanner = MagicMock()
+    scanner.scan = AsyncMock()
+    library = MagicMock()
+    library.get_file_rows_for_album = AsyncMock(return_value=[])
+    strategy = TidarrStrategy(
+        client=MagicMock(),
+        tidarr=MagicMock(),
+        store=MagicMock(),
+        scanner=scanner,
+        library=library,
+        library_paths=[root],
+        staging=tmp_path,
+        manifest_codec=MagicMock(),
+        naming_template="",
+    )
+    task = _album_task()
+    task.release_group_mbid = "rg-1"
+
+    await strategy.import_files(task, MagicMock(), completed=True)
+
+    scanner.scan.assert_awaited_once_with([artist])

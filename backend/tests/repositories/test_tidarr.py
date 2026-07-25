@@ -55,6 +55,33 @@ async def test_download_adapter_maps_finished_queue_item():
 
 
 @pytest.mark.asyncio
+async def test_download_adapter_treats_disappeared_restored_job_as_completed():
+    def handler(request):
+        return httpx.Response(200, json={"queue": []})
+
+    adapter = TidarrDownloadClient(TidarrClient(_http(handler), "http://tidarr:8484", "key"))
+    status = await adapter.get_status(TaskHandle(source="tidarr", username="42"))
+    assert status.status == "completed"
+    assert status.matched_transfers == 1
+
+
+@pytest.mark.asyncio
+async def test_download_adapter_gives_new_job_queue_materialisation_grace():
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(201, json={})
+        return httpx.Response(200, json={"queue": []})
+
+    adapter = TidarrDownloadClient(TidarrClient(_http(handler), "http://tidarr:8484", "key"))
+    handle = await adapter.enqueue(
+        EnqueueRequest(task_id="task", source="tidarr", nzb_url="42", job_name="album")
+    )
+    status = await adapter.get_status(handle)
+    assert status.status == "queued"
+    assert status.matched_transfers == 0
+
+
+@pytest.mark.asyncio
 async def test_download_adapter_enqueue_uses_tidal_identity():
     seen = {}
 

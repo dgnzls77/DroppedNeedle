@@ -1,0 +1,11 @@
+--- a/tidarr/api/dist/src/services/tiddl.js
++++ b/tidarr/api/dist/src/services/tiddl.js
+@@
+     const args = [];
+     args.push("download");
++    // Album ownership is release-specific. Tiddl's default library scan skips a
++    // track when the same recording exists on a compilation, which can leave a
++    // requested studio album incomplete. Download the requested release in full;
++    // Beets remains responsible for final album identity and placement.
++    args.push("--no-skip");
+     const lidarrFullPostProcessing = process.env.LIDARR_FULL_POST_PROCESSING === "true";

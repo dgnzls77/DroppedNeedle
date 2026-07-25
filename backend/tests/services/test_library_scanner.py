@@ -9,6 +9,7 @@ the two network boundaries - ``MusicBrainzMatcher`` (Tier 2/3) and
 import os
 import shutil
 import threading
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -62,6 +63,36 @@ def _music_dir(tmp_path, *names):
         shutil.copy(FIXTURES / name, dest)
         paths.append(dest)
     return music, paths
+
+
+@pytest.mark.asyncio
+async def test_overlapping_scan_preserves_followup_scope(tmp_path):
+    scanner, *_ = _build(tmp_path)
+    full_root = tmp_path / "music"
+    artist_root = full_root / "Artist"
+    artist_root.mkdir(parents=True)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    calls = []
+
+    async def _run(paths, resume=False, force=False):
+        calls.append((list(paths), resume, force))
+        if len(calls) == 1:
+            first_started.set()
+            await release_first.wait()
+
+    scanner._run_scan = _run
+    first = asyncio.create_task(scanner.scan([full_root]))
+    await first_started.wait()
+    followup = asyncio.create_task(scanner.scan([artist_root]))
+    await asyncio.sleep(0)
+    release_first.set()
+    await asyncio.gather(first, followup)
+
+    assert calls == [
+        ([full_root], False, False),
+        ([artist_root], False, False),
+    ]
 
 
 # -- tier transitions --

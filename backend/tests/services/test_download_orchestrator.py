@@ -1247,6 +1247,108 @@ async def test_retry_task_sets_retry_origin(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_retry_does_not_wait_for_running_full_library_scan(tmp_path: Path):
+    scanner = MagicMock()
+    scanner.is_running = MagicMock(return_value=True)
+    scanner.scan = AsyncMock()
+    store, orch, *_ = _build(
+        tmp_path,
+        library_scanner=scanner,
+        # Production settings provide strings; keep the regression test honest.
+        library_paths=[str(tmp_path / "music")],
+    )
+    task = await _new_task(store, origin="retry")
+
+    await orch._await_retry_catalog(task)
+
+    scanner.scan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_source_can_advance_to_next_priority_source(tmp_path: Path):
+    store, orch, *_ = _build(tmp_path)
+    task = await _new_task(store)
+    job = await store.create_search_job(
+        user_id=task.user_id,
+        artist_name=task.artist_name,
+        album_title=task.album_title,
+        year=task.year,
+        track_count=task.track_count,
+        release_group_mbid=task.release_group_mbid,
+        artist_mbid=task.artist_mbid,
+        search_query="Artist - Album",
+    )
+    tidal = ScoredCandidate(
+        source="tidal",
+        username="Tidarr",
+        parent_directory="Album",
+        tidal_id="tidal-1",
+        tidal_title="Album",
+        tidal_artist="Artist",
+        tidal_media_type="album",
+        coherence=1.0,
+        file_confidence=1.0,
+        final_score=1.0,
+        tier="auto",
+    )
+    soulseek = _candidate(0.9, username="peer")
+    await store.set_search_job_candidates(job.id, [tidal])
+    await store.link_picked_candidate(
+        task.id,
+        job.id,
+        0,
+        tidal.username,
+        tidal.parent_directory,
+        tidal.final_score,
+        source="tidal",
+        download_client="tidarr",
+    )
+    task = await store.get_task(task.id)
+    orch._source_priority = ["tidal", "soulseek", "usenet"]
+    orch._source_enabled = MagicMock(side_effect=lambda source: source == "soulseek")
+    orch._source_available = AsyncMock(return_value=True)
+    orch._search_and_score = AsyncMock(return_value=[soulseek])
+
+    advanced = await orch._advance_source(task, {"tidal"})
+
+    assert advanced.source == "soulseek"
+    assert advanced.download_client == "slskd"
+    assert advanced.source_username == "peer"
+
+
+@pytest.mark.asyncio
+async def test_automatic_failover_skips_manual_tier_candidate(tmp_path: Path):
+    store, orch, *_ = _build(tmp_path)
+    task = await _new_task(store)
+    job = await store.create_search_job(
+        user_id=task.user_id,
+        artist_name=task.artist_name,
+        album_title=task.album_title,
+        year=task.year,
+        track_count=task.track_count,
+        release_group_mbid=task.release_group_mbid,
+        artist_mbid=task.artist_mbid,
+        search_query="Artist - Album",
+    )
+    first = _candidate(0.9, username="first")
+    manual = _candidate(0.6, username="manual")
+    await store.set_search_job_candidates(job.id, [first, manual])
+    await store.link_picked_candidate(
+        task.id,
+        job.id,
+        0,
+        first.username,
+        first.parent_directory,
+        first.final_score,
+        source="soulseek",
+        download_client="slskd",
+    )
+    task = await store.get_task(task.id)
+
+    assert await orch._advance_candidate(task, set()) is None
+
+
+@pytest.mark.asyncio
 async def test_retry_task_propagates_upgrade_origin(tmp_path: Path):
     """An upgrade's retry must stay an upgrade - the origin-aware gate and
     replace-on-import key off origin='upgrade' (CollectionManagement D18)."""

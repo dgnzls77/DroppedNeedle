@@ -116,6 +116,8 @@ class LibraryScanner:
         self._cancel = asyncio.Event()
         self._running = False
         self._followup_scan: asyncio.Future[None] | None = None
+        self._followup_paths: set[Path] = set()
+        self._followup_force = False
         # Release groups a scan/re-identify re-attributed - their cached album pages are
         # stale and get busted when the run finishes (so the page reflects the new identity
         # without a manual refresh). Reset per run; ``None`` invalidator = no-op (tests).
@@ -392,12 +394,16 @@ class LibraryScanner:
         # A Tidarr completion can arrive while a long full-library scan is using a
         # path snapshot that predates the new files. Coalesce all overlapping
         # callers into one follow-up scan and make them wait for that fresh pass.
+        # Preserve the callers' requested scopes: a one-artist Tidarr refresh must
+        # never accidentally become another multi-hour full-library scan.
         if self._running:
             if self._followup_scan is None:
                 self._followup_scan = asyncio.get_running_loop().create_future()
                 logger.info(
                     "A library scan is already running; queued one follow-up scan"
                 )
+            self._followup_paths.update(Path(path) for path in library_paths)
+            self._followup_force = self._followup_force or force
             await asyncio.shield(self._followup_scan)
             return
 
@@ -408,8 +414,16 @@ class LibraryScanner:
             while self._followup_scan is not None:
                 followup = self._followup_scan
                 self._followup_scan = None
+                followup_paths = list(self._followup_paths)
+                followup_force = self._followup_force
+                self._followup_paths.clear()
+                self._followup_force = False
                 try:
-                    await self._run_scan(library_paths, resume=False, force=False)
+                    await self._run_scan(
+                        followup_paths or library_paths,
+                        resume=False,
+                        force=followup_force,
+                    )
                 except BaseException as exc:
                     if not followup.done():
                         if isinstance(exc, asyncio.CancelledError):
@@ -427,6 +441,8 @@ class LibraryScanner:
             self._running = False
             pending = self._followup_scan
             self._followup_scan = None
+            self._followup_paths.clear()
+            self._followup_force = False
             if pending is not None and not pending.done():
                 if isinstance(failure, asyncio.CancelledError):
                     pending.cancel()
