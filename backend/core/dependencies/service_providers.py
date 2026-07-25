@@ -1977,12 +1977,18 @@ def get_download_manifest_codec() -> "ManifestCodec":
 
 
 def _build_download_orchestrator(
-    *, file_processor, library_manager, album_service, on_import_callback
+    *,
+    file_processor,
+    library_manager,
+    album_service,
+    on_import_callback,
+    library_scanner=None,
 ) -> "DownloadOrchestrator":
     from pathlib import Path
 
     from core.config import get_settings
     from services.native.download_orchestrator import DownloadOrchestrator
+    from services.native.soulseek_preprocessor import SoulseekPreprocessor
 
     from .repo_providers import (
         get_download_client_repository,
@@ -2040,9 +2046,17 @@ def _build_download_orchestrator(
         tidarr_client=get_tidarr_download_client(),
         tidarr_api=get_tidarr_client(),
         tidarr_enabled=tidarr_enabled,
-        library_scanner=get_library_scanner(),
+        library_scanner=library_scanner or get_library_scanner(),
         library_paths=[root.path for root in lib.library_roots],
         album_service=album_service,
+        soulseek_preprocessor=(
+            SoulseekPreprocessor(
+                Path(get_settings().slskd_downloads_path),
+                timeout_seconds=get_settings().soulseek_pipeline_timeout_seconds,
+            )
+            if get_settings().soulseek_pipeline_enabled
+            else None
+        ),
         usenet_category=sab.category,
         usenet_priority=sab.priority,
         usenet_post_processing=sab.post_processing,
@@ -2067,6 +2081,8 @@ def get_download_orchestrator() -> "DownloadOrchestrator":
 
 @singleton
 def get_target_download_orchestrator() -> "DownloadOrchestrator":
+    from .compat_providers import get_target_compat_scan_service
+
     return _build_download_orchestrator(
         file_processor=get_target_file_processor(),
         library_manager=get_target_library_repository(),
@@ -2074,6 +2090,7 @@ def get_target_download_orchestrator() -> "DownloadOrchestrator":
         on_import_callback=_build_target_import_invalidation(
             get_cache(), get_disk_cache()
         ),
+        library_scanner=get_target_compat_scan_service(),
     )
 
 

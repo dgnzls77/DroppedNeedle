@@ -1,0 +1,39 @@
+services:
+  droppedneedle:
+    image: droppedneedle:tidarr-edition-soulseek-20260725-1118
+    container_name: droppedneedle
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - exec uvicorn main:app --host 0.0.0.0 --port $${PORT} --loop uvloop --http httptools --workers 1
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      PORT: "8688"
+      TZ: America/Los_Angeles
+      SLSKD_DOWNLOADS_PATH: /slskd-downloads
+      SOULSEEK_PIPELINE_ENABLED: "true"
+      SOULSEEK_PIPELINE_TIMEOUT_SECONDS: "1800"
+    ports:
+      - 127.0.0.1:8688:8688
+    volumes:
+      - ./config:/app/config
+      - ./cache:/app/cache
+      - /mnt/music/library:/music:rw
+      - /mnt/music/watch/nicotine:/slskd-downloads:rw
+    networks:
+      - saltbox
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: saltbox
+      traefik.http.routers.droppedneedle.entrypoints: websecure
+      traefik.http.routers.droppedneedle.rule: Host(`music.brutalflix.com`)
+      traefik.http.routers.droppedneedle.middlewares: globalHeaders@file,secureHeaders@file,robotHeaders@file
+      traefik.http.routers.droppedneedle.tls: "true"
+      traefik.http.routers.droppedneedle.tls.certresolver: cfdns
+      traefik.http.services.droppedneedle.loadbalancer.server.port: "8688"
+
+networks:
+  saltbox:
+    external: true

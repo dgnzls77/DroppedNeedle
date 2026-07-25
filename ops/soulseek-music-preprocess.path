@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for DroppedNeedle Soulseek preprocessing requests
+
+[Path]
+PathChanged=/mnt/music/watch/nicotine/_pipeline/requests
+Unit=soulseek-music-preprocess.service
+
+[Install]
+WantedBy=multi-user.target

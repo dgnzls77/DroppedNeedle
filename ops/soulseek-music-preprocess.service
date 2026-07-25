@@ -1,0 +1,8 @@
+[Unit]
+Description=Preprocess DroppedNeedle Soulseek downloads with Beets and ReplayGain
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/tidarr/soulseek-music-preprocess.sh

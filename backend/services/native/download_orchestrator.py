@@ -192,6 +192,7 @@ class DownloadOrchestrator:
         library_scanner=None,
         library_paths=None,
         album_service=None,  # AlbumService | None - for the Usenet MB tracklist
+        soulseek_preprocessor=None,
         usenet_category: str | None = None,
         usenet_priority: int | None = None,
         usenet_post_processing: int | None = None,
@@ -218,6 +219,8 @@ class DownloadOrchestrator:
         # cache-aside via the album page's own resolver. None in minimal test
         # constructions -> the count-based check below is the fallback.
         self._album_service = album_service
+        self._library_scanner = library_scanner
+        self._library_paths = list(library_paths or [])
         self._manifest_codec = manifest_codec
         self._bus = event_bus
         self._staging = Path(staging_path)
@@ -245,6 +248,7 @@ class DownloadOrchestrator:
         self._get_download_policy = get_download_policy
         self._usenet_scorer = usenet_scorer  # for the Usenet re-gate tier (Phase 2)
         self._active_tasks: dict[str, asyncio.Task] = {}
+        self._source_health_cache: dict[str, tuple[float, bool]] = {}
 
         # Source strategies (step 4): all per-source behaviour (search, enqueue, import,
         # client, identity, blocklist-on-failure, poll/cancel/fault policy) lives here so the
@@ -263,6 +267,7 @@ class DownloadOrchestrator:
                 manifest_codec=manifest_codec,
                 naming_template=naming_template,
                 library=library_manager,
+                preprocessor=soulseek_preprocessor,
             ),
         }
         # Created whenever a SABnzbd client exists (not gated on the indexer), so a Usenet
@@ -295,7 +300,7 @@ class DownloadOrchestrator:
                 store=download_store,
                 scanner=library_scanner,
                 library=library_manager,
-                library_paths=library_paths or [],
+                library_paths=self._library_paths,
                 staging=self._staging,
                 manifest_codec=manifest_codec,
                 naming_template=naming_template,
@@ -359,6 +364,16 @@ class DownloadOrchestrator:
         )
 
         try:
+            if task.origin == "retry":
+                if await self._settle_if_library_satisfied(
+                    task, context="retry_dispatch"
+                ):
+                    return
+                await self._await_retry_catalog(task)
+                if await self._settle_if_library_satisfied(
+                    task, context="retry_dispatch_after_scan"
+                ):
+                    return
             if not any(self._source_enabled(source) for source in ("tidal", "soulseek", "usenet")):
                 # Disabled-but-configured slskd shouldn't read as "not configured".
                 if self._client.is_configured():
@@ -403,6 +418,27 @@ class DownloadOrchestrator:
         if source == "usenet":
             return self._usenet_enabled
         return False
+
+    async def _source_available(self, source: str) -> bool:
+        """Reachability gate for sources whose saved configuration can outlive them."""
+        if source != "soulseek":
+            return True
+        now = time.monotonic()
+        cached = self._source_health_cache.get(source)
+        if cached is not None and now - cached[0] < 30.0:
+            return cached[1]
+        try:
+            status = await asyncio.wait_for(self._client.health_check(), timeout=3.0)
+            available = status.status == "ok"
+        except Exception:  # noqa: BLE001 - an unavailable fallback is skipped, not fatal
+            available = False
+        self._source_health_cache[source] = (now, available)
+        if not available:
+            logger.warning(
+                "download.source_unavailable",
+                extra={"source": source, "reason": "health_check_failed"},
+            )
+        return available
 
     def _enabled_source_names(self) -> list[str]:
         """Display names of the sources actually searched - so failure messages name what
@@ -459,6 +495,8 @@ class DownloadOrchestrator:
         remembered: list[list] = []
         for source in self._source_priority:
             if not self._source_enabled(source):
+                continue
+            if not await self._source_available(source):
                 continue
             candidates = await self._search_and_score(task, source)
             remembered.append(candidates)
@@ -1112,6 +1150,59 @@ class DownloadOrchestrator:
         # source before settling, rather than declaring done on the first track.
         return bool(result and result.succeeded and not result.failed)
 
+    async def _catalog_scan_running(self) -> bool:
+        if self._library_scanner is None:
+            return False
+        check = getattr(self._library_scanner, "is_running", None)
+        if check is None:
+            return bool(getattr(self._library_scanner, "_running", False))
+        result = check()
+        return bool(await result) if hasattr(result, "__await__") else bool(result)
+
+    async def _await_retry_catalog(self, task) -> None:  # noqa: ANN001
+        if (
+            task.origin == "retry"
+            and self._library_scanner is not None
+            and await self._catalog_scan_running()
+        ):
+            await self._library_scanner.scan(self._library_paths)
+
+    async def _library_satisfies(self, task, *, context: str) -> bool:  # noqa: ANN001
+        try:
+            if task.download_type == "track":
+                return bool(
+                    task.recording_mbid
+                    and await self._library.has_track(task.recording_mbid)
+                )
+            if not task.release_group_mbid:
+                return False
+            coverage = await self._coverage(task, context=context)
+            if coverage is not None:
+                covered, expected_total, _orphans = coverage
+                return expected_total > 0 and covered >= expected_total
+            expected = self._expected_track_count(task)
+            return expected > 0 and await self._imported_track_count(task) >= expected
+        except Exception:  # noqa: BLE001 - a catalog miss must not break retry cleanup
+            logger.exception("Could not verify retry target %s", task.id)
+            return False
+
+    async def _settle_if_library_satisfied(
+        self, task, *, context: str  # noqa: ANN001
+    ) -> bool:
+        if not await self._library_satisfies(task, context=context):
+            return False
+        logger.info(
+            "download.retry_satisfied",
+            extra={
+                "task_id": task.id,
+                "download_type": task.download_type,
+                "release_group_mbid": task.release_group_mbid,
+                "recording_mbid": task.recording_mbid,
+            },
+        )
+        await self._finalize(task, DownloadStatus.COMPLETED)
+        return True
+
     async def _settle_incomplete(  # noqa: ANN001
         self,
         task,
@@ -1197,6 +1288,8 @@ class DownloadOrchestrator:
             "files_total": max(expected, present),
             "files_failed": max(0, expected - present),
         }
+        if status == DownloadStatus.COMPLETED:
+            fields["error_message"] = None
         if error_message:
             fields["error_message"] = error_message
         await self._store.update_status(task.id, status, **fields)
@@ -1359,6 +1452,16 @@ class DownloadOrchestrator:
         if task is None:
             return
         try:
+            if task.origin == "retry":
+                if await self._settle_if_library_satisfied(
+                    task, context="retry_resume"
+                ):
+                    return
+                await self._await_retry_catalog(task)
+                if await self._settle_if_library_satisfied(
+                    task, context="retry_resume_after_scan"
+                ):
+                    return
             if not (self._staging / task_id / "manifest.json").exists():
                 # Never got as far as writing a manifest -> re-dispatch from scratch.
                 self.dispatch(task_id)
@@ -1673,9 +1776,16 @@ class DownloadOrchestrator:
             return
 
         now = time.time()
+        scan_running = await self._catalog_scan_running()
 
         eligible = await self._store.list_retryable_tasks(self._auto_retry_max_attempts)
         for task in eligible:
+            if await self._settle_if_library_satisfied(
+                task, context="auto_retry"
+            ):
+                continue
+            if scan_running:
+                continue
             backoff = self._retry_backoff_seconds(task.retry_count)
             completed_at = task.completed_at or task.created_at or 0.0
             if now - completed_at < backoff:

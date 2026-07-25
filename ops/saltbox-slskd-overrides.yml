@@ -1,0 +1,16 @@
+# Non-secret Saltbox host overrides for DroppedNeedle's slskd provider.
+# Authentication and Soulseek credentials remain in /opt/slskd/slskd.yml.
+slskd_role_docker_envs_custom:
+  SLSKD_DOWNLOADS_DIR: "/downloads"
+  SLSKD_INCOMPLETE_DIR: "/incomplete"
+  SLSKD_SHARED_DIR: "/music/library"
+  SLSKD_REMOTE_FILE_MANAGEMENT: "true"
+  SLSKD_UMASK: "002"
+
+# Disable Saltbox's generic /downloads mount because this service needs the
+# DroppedNeedle watch folder at that exact container path.
+slskd_role_docker_volumes_download: false
+slskd_role_docker_volumes_custom:
+  - "/mnt/music/watch/nicotine:/downloads"
+  - "/mnt/music/incomplete:/incomplete"
+  - "/mnt/music/library:/music/library:ro"

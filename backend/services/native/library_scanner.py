@@ -115,6 +115,7 @@ class LibraryScanner:
         self._events = event_bus
         self._cancel = asyncio.Event()
         self._running = False
+        self._followup_scan: asyncio.Future[None] | None = None
         # Release groups a scan/re-identify re-attributed - their cached album pages are
         # stale and get busted when the run finishes (so the page reflects the new identity
         # without a manual refresh). Reset per run; ``None`` invalidator = no-op (tests).
@@ -388,18 +389,53 @@ class LibraryScanner:
     async def scan(
         self, library_paths: list[Path], resume: bool = False, force: bool = False
     ) -> None:
-        # Guard the singleton against overlapping scans (a manual start racing the
-        # boot resume, or a double-start that slipped past the route's status check).
+        # A Tidarr completion can arrive while a long full-library scan is using a
+        # path snapshot that predates the new files. Coalesce all overlapping
+        # callers into one follow-up scan and make them wait for that fresh pass.
         if self._running:
-            logger.warning(
-                "A library scan is already running on this instance; ignoring overlapping start"
-            )
+            if self._followup_scan is None:
+                self._followup_scan = asyncio.get_running_loop().create_future()
+                logger.info(
+                    "A library scan is already running; queued one follow-up scan"
+                )
+            await asyncio.shield(self._followup_scan)
             return
+
         self._running = True
+        failure: BaseException | None = None
         try:
             await self._run_scan(library_paths, resume, force)
+            while self._followup_scan is not None:
+                followup = self._followup_scan
+                self._followup_scan = None
+                try:
+                    await self._run_scan(library_paths, resume=False, force=False)
+                except BaseException as exc:
+                    if not followup.done():
+                        if isinstance(exc, asyncio.CancelledError):
+                            followup.cancel()
+                        else:
+                            followup.set_exception(exc)
+                    raise
+                else:
+                    if not followup.done():
+                        followup.set_result(None)
+        except BaseException as exc:
+            failure = exc
+            raise
         finally:
             self._running = False
+            pending = self._followup_scan
+            self._followup_scan = None
+            if pending is not None and not pending.done():
+                if isinstance(failure, asyncio.CancelledError):
+                    pending.cancel()
+                elif failure is not None:
+                    pending.set_exception(failure)
+                else:
+                    pending.set_exception(
+                        RuntimeError("Library scan ended before its queued follow-up")
+                    )
 
     async def _run_scan(
         self, library_paths: list[Path], resume: bool = False, force: bool = False

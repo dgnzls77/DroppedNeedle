@@ -1,0 +1,16 @@
+---
+- name: Apply DroppedNeedle slskd Saltbox overrides
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Persist the non-secret slskd host-variable block
+      ansible.builtin.blockinfile:
+        path: /srv/git/saltbox/inventories/host_vars/localhost.yml
+        marker: "# {mark} DROPPEDNEEDLE SLSKD"
+        prepend_newline: true
+        block: "{{ lookup('ansible.builtin.file', override_file) }}"
+        backup: true
+      vars:
+        override_file: /tmp/saltbox-slskd-overrides.yml

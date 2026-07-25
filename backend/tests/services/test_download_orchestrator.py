@@ -267,6 +267,8 @@ def _build(
     auto_retry_base_interval_minutes=15.0,
     soulseek_enabled=True,
     album_service=None,
+    library_scanner=None,
+    library_paths=None,
 ):
     db_path = tmp_path / "library.db"
     store = DownloadStore(db_path=db_path, write_lock=threading.Lock())
@@ -321,6 +323,8 @@ def _build(
         on_import_callback=on_import,
         soulseek_enabled=soulseek_enabled,
         album_service=album_service,
+        library_scanner=library_scanner,
+        library_paths=library_paths,
     )
     return store, orch, file_processor, library
 
@@ -1617,6 +1621,69 @@ async def test_retry_failed_tasks_redispatches_eligible_failed(tmp_path: Path):
     assert new_task.retry_count == 1
     assert new_task.status == "queued"
     assert new_task.release_group_mbid == task.release_group_mbid
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_tasks_settles_album_already_in_catalog(tmp_path: Path):
+    library = _FakeLibrary(
+        [{"file_path": "/music/Artist/Album/01.flac", "file_format": "flac"}]
+    )
+    store, orch, *_ = _build(
+        tmp_path,
+        library=library,
+        auto_retry_base_interval_minutes=60.0,
+    )
+    orch.dispatch = MagicMock()
+    task = await _new_task(store, status="failed", retry_count=0)
+    await store.update_status(
+        task.id,
+        "failed",
+        error_message="download failed",
+        completed_at=_t.time(),
+    )
+
+    await orch.retry_failed_tasks()
+
+    settled = await store.get_task(task.id)
+    assert settled.status == "completed"
+    assert settled.error_message is None
+    orch.dispatch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_tasks_waits_while_catalog_scan_runs(tmp_path: Path):
+    scanner = MagicMock()
+    scanner.is_running = AsyncMock(return_value=True)
+    store, orch, *_ = _build(
+        tmp_path,
+        library_scanner=scanner,
+        auto_retry_base_interval_minutes=0.01,
+    )
+    orch.dispatch = MagicMock()
+    task = await _new_task(store, status="failed", retry_count=0)
+    await store.update_status(task.id, "failed", completed_at=_t.time() - 999)
+
+    await orch.retry_failed_tasks()
+
+    orch.dispatch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unreachable_soulseek_is_skipped_before_search(tmp_path: Path):
+    client = _StubClient()
+    client.health_check = AsyncMock(return_value=ServiceStatus(status="error"))
+    store, orch, *_ = _build(
+        tmp_path,
+        client=client,
+        scorer_result=[_candidate(0.9)],
+    )
+    task = await _new_task(store)
+
+    await orch.process_task(task.id)
+
+    failed = await store.get_task(task.id)
+    assert failed.status == "failed"
+    client.enqueue.assert_not_awaited()
 
 
 @pytest.mark.asyncio

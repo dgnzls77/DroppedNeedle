@@ -146,6 +146,12 @@ class DownloadService:
         self._pins = release_pin_store
         self._ownership = ownership_service
         self._library_reconciler = library_reconciler or library_manager
+        # The initial active-task lookup happens before best-effort metadata
+        # backfills. Concurrent requests for the same target can therefore all
+        # pass it before any task is inserted. Recheck under a target-scoped
+        # lock immediately before creation so one app instance dispatches only
+        # one live task per user and album/track.
+        self._request_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
 
     def _ensure_enabled(self) -> None:
         # flag captured at construction; the config-save PUT clears the
@@ -660,23 +666,44 @@ class DownloadService:
                 track_duration_seconds,
             ) = await self._single_track_identity(release_group_mbid)
 
-        task = await self._store.create_task(
-            user_id=user_id,
-            download_type=download_type,
-            release_group_mbid=release_group_mbid,
-            release_mbid=release_mbid,
-            recording_mbid=recording_mbid,
-            artist_mbid=artist_mbid,
-            artist_name=artist_name,
-            album_title=album_title,
-            track_title=track_title,
-            year=year,
-            track_count=track_count,
-            track_duration_seconds=track_duration_seconds,
-            origin=origin,
+        target_id = (
+            recording_mbid
+            if download_type == "track" and recording_mbid
+            else release_group_mbid
         )
-        self._orchestrator.dispatch(task.id)
-        return task.id
+        lock_key = (user_id, download_type, target_id or "")
+        request_lock = self._request_locks.setdefault(lock_key, asyncio.Lock())
+        was_contended = request_lock.locked()
+        async with request_lock:
+            if was_contended:
+                if download_type == "track" and recording_mbid:
+                    existing = await self._store.get_active_task_for_track(
+                        recording_mbid, user_id
+                    )
+                else:
+                    existing = await self._store.get_active_task_for_album(
+                        release_group_mbid, user_id
+                    )
+                if existing:
+                    return existing.id
+
+            task = await self._store.create_task(
+                user_id=user_id,
+                download_type=download_type,
+                release_group_mbid=release_group_mbid,
+                release_mbid=release_mbid,
+                recording_mbid=recording_mbid,
+                artist_mbid=artist_mbid,
+                artist_name=artist_name,
+                album_title=album_title,
+                track_title=track_title,
+                year=year,
+                track_count=track_count,
+                track_duration_seconds=track_duration_seconds,
+                origin=origin,
+            )
+            self._orchestrator.dispatch(task.id)
+            return task.id
 
     async def request_track(
         self,

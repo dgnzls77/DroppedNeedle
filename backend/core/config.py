@@ -90,6 +90,14 @@ class Settings(BaseSettings):
         default=Path("/data/downloads/slskd"),
         description="Mounted slskd downloads directory (read-write, same filesystem as the library); import source for completed downloads.",
     )
+    soulseek_pipeline_enabled: bool = Field(
+        default=False,
+        description="Require the operator-owned Beets/ReplayGain handoff before importing Soulseek files.",
+    )
+    soulseek_pipeline_timeout_seconds: float = Field(
+        default=1800.0,
+        description="Maximum time to wait for the external Soulseek processing receipt.",
+    )
     download_client_concurrent_searches: int = Field(
         default=1, description="Max concurrent slskd searches"
     )

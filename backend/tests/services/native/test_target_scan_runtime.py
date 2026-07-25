@@ -68,6 +68,54 @@ async def test_subsonic_target_projection_uses_only_the_coordinator() -> None:
 
 
 @pytest.mark.asyncio
+async def test_target_scan_adapter_waits_for_target_catalog_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator = AsyncMock()
+    coordinator.request_run.return_value = SimpleNamespace(
+        run_id="run-1", disposition="started"
+    )
+    coordinator.snapshot.side_effect = [
+        ScanRunSnapshot(
+            run=ScanRun(
+                id="run-1",
+                kind="incremental",
+                trigger="automatic",
+                state="indexing",
+                phase="indexing",
+            )
+        ),
+        ScanRunSnapshot(
+            run=ScanRun(
+                id="run-1",
+                kind="incremental",
+                trigger="automatic",
+                state="completed",
+                phase="reconciling",
+            )
+        ),
+    ]
+    resolver = SimpleNamespace(
+        policy_revision="policy-1",
+        settings=SimpleNamespace(
+            library_roots=[
+                SimpleNamespace(id="root-a", path="/music", policy="automatic")
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "services.compat.target_scan_service.asyncio.sleep", AsyncMock()
+    )
+    service = TargetCompatScanService(coordinator, lambda: resolver)
+
+    await service.scan([Path("/music")])
+
+    request = coordinator.request_run.await_args.args[0]
+    assert request.trigger == "automatic"
+    assert coordinator.snapshot.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_supervisor_fetches_the_current_coordinator_each_iteration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

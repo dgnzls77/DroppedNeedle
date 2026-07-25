@@ -15,6 +15,7 @@ slices fold in identity + blocklist-on-failure and the failover-loop source bran
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -30,11 +31,12 @@ from repositories.protocols.download_client import (
 from services.native.acquisition.errors import OrchestrationError
 from services.native.file_processor import (
     DOWNLOADS_MOUNT_UNAVAILABLE,
+    IMPORT_FAILED,
     QUARANTINE_REASONS,
     FileFailure,
     ProcessResult,
 )
-from services.native.title_match import fold
+from services.native.title_match import fold, title_containment_score
 from rapidfuzz import fuzz
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,12 @@ _USENET_SETTLE_SECONDS = 20.0
 # A SABnzbd failure mentioning one of these is a password-protected NZB - a non-retryable
 # skip (blocklisted regardless of age, since propagation can't fix encryption).
 _PASSWORD_MARKERS = ("password", "passworded", "encrypt")
+_REMASTER_RE = re.compile(r"\bremaster(?:ed)?\b", re.IGNORECASE)
+_UNDESIRED_EDITION_RE = re.compile(
+    r"\b(?:deluxe|expanded|extended|anniversary|bonus|collector(?:'s)?|"
+    r"super\s+deluxe|box\s+set)\b",
+    re.IGNORECASE,
+)
 
 
 async def _upgrade_held_tier(library, task) -> "str | None":  # noqa: ANN001
@@ -133,7 +141,7 @@ class SoulseekStrategy:
 
     def __init__(  # noqa: ANN001
         self, *, indexer, scorer, track_matcher, client, store, file_processor,
-        staging, manifest_codec, naming_template, library=None,
+        staging, manifest_codec, naming_template, library=None, preprocessor=None,
     ):
         self._indexer = indexer
         self._scorer = scorer
@@ -146,6 +154,7 @@ class SoulseekStrategy:
         self._naming_template = naming_template
         # Resolves the held tier an origin='upgrade' run must beat (upgrade-floor, D12).
         self._library = library
+        self._preprocessor = preprocessor
 
     @property
     def client(self):  # noqa: ANN201
@@ -325,6 +334,43 @@ class SoulseekStrategy:
             "download.processing",
             extra={"task_id": task.id, "files_total": len(manifest.target_files)},
         )
+        targets = manifest.target_files
+        if only_filenames is not None:
+            targets = [item for item in targets if item.filename in only_filenames]
+        if self._preprocessor is not None:
+            source_paths: list[Path] = []
+            for expected in targets:
+                source = await self._client.get_file_path(
+                    manifest.handle, expected.filename, expected.size
+                )
+                # Missing here may mean a crash-idempotent prior import. FileProcessor
+                # owns that reconciliation, so only preprocess files still present.
+                if source is not None and source.is_file():
+                    source_paths.append(source)
+            if source_paths:
+                from services.native.soulseek_preprocessor import SoulseekPreprocessError
+
+                try:
+                    await self._preprocessor.preprocess(task.id, source_paths)
+                except SoulseekPreprocessError:
+                    logger.exception(
+                        "Soulseek Beets/ReplayGain preprocessing failed for task %s",
+                        task.id,
+                    )
+                    return (
+                        ProcessResult(
+                            succeeded=[],
+                            failed=[
+                                FileFailure(
+                                    filename=item.filename,
+                                    reason=IMPORT_FAILED,
+                                )
+                                for item in targets
+                            ],
+                        ),
+                        len(source_paths),
+                    )
+
         result = await self._file_processor.process_downloaded(
             manifest, only_filenames=only_filenames
         )
@@ -389,23 +435,57 @@ class TidarrStrategy:
         wanted_title = task.track_title if media_type == "track" else task.album_title
         query = " ".join(part for part in (task.artist_name, wanted_title) if part)
         found = await self._tidarr.search(query, media_type)
-        candidates: list[ScoredCandidate] = []
+        ranked: list[tuple[ScoredCandidate, bool]] = []
         for item in found:
             artist_score = fuzz.ratio(fold(task.artist_name), fold(item.artist)) / 100.0
-            title_score = fuzz.ratio(fold(wanted_title or ""), fold(item.title)) / 100.0
+            # Tidal commonly exposes the same album as both "Album" and
+            # "Album (2011 Remastered)". Edition descriptors are not album identity,
+            # so score both as the requested work instead of penalising the remaster.
+            title_score = title_containment_score(wanted_title or "", item.title)
             album_score = 1.0
             if media_type == "track" and task.album_title and item.album:
-                album_score = fuzz.ratio(fold(task.album_title), fold(item.album)) / 100.0
+                album_score = title_containment_score(task.album_title, item.album)
             year_score = 1.0 if not task.year or not item.year else max(0.0, 1.0 - abs(task.year - item.year) * 0.2)
             score = 0.45 * artist_score + 0.4 * title_score + 0.1 * album_score + 0.05 * year_score
             tier = "auto" if score >= auto else "manual" if score >= manual else "rejected"
-            candidates.append(ScoredCandidate(
+            undesirable_edition = (
+                media_type == "album"
+                and _UNDESIRED_EDITION_RE.search(item.title) is not None
+            )
+            # Deluxe/expanded/etc. releases remain visible for an explicit human pick,
+            # but never stop source failover by auto-winning the Tidarr tier.
+            if undesirable_edition and tier == "auto":
+                tier = "manual"
+            candidate = ScoredCandidate(
                 source="tidal", username="Tidarr", parent_directory=item.album or item.title,
                 tidal_id=item.id, tidal_title=item.title, tidal_artist=item.artist,
                 tidal_media_type=media_type,
                 coherence=score, file_confidence=score, final_score=score, tier=tier,
-            ))
-        return sorted(candidates, key=lambda c: c.final_score, reverse=True)
+            )
+            # Prefer a remaster only inside the strong-match/auto tier. This prevents
+            # an unrelated release containing "Remastered" from jumping ahead of a
+            # correct original while still choosing the remaster when both editions
+            # represent the requested album.
+            prefer_remaster = (
+                media_type == "album"
+                and tier == "auto"
+                and not undesirable_edition
+                and artist_score >= 0.85
+                and title_score >= 0.9
+                and _REMASTER_RE.search(item.title) is not None
+            )
+            ranked.append((candidate, prefer_remaster))
+
+        tier_rank = {"rejected": 0, "manual": 1, "auto": 2}
+        ranked.sort(
+            key=lambda item: (
+                tier_rank[item[0].tier],
+                item[1],
+                item[0].final_score,
+            ),
+            reverse=True,
+        )
+        return [candidate for candidate, _prefer_remaster in ranked]
 
     async def enqueue(self, task, candidate, *, strict_track_duration, hold_on_wrong_track=False):  # noqa: ANN001, ANN201, ARG002
         media_type = candidate.tidal_media_type or ("track" if task.download_type == "track" else "album")

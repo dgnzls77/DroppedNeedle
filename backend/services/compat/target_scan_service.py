@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from models.library_work import ScanRequest, ScanScope
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.native.library_scan_coordinator import LibraryScanCoordinator
@@ -16,12 +18,12 @@ class TargetCompatScanService:
         self._coordinator = coordinator
         self._resolver_getter = resolver_getter
 
-    async def start_scan(self) -> None:
+    async def _request_scan(self, *, trigger: str):
         resolver: LibraryPolicyResolver = self._resolver_getter()
-        await self._coordinator.request_run(
+        return await self._coordinator.request_run(
             ScanRequest(
                 kind="incremental",
-                trigger="subsonic",
+                trigger=trigger,
                 policy_revision=resolver.policy_revision,
                 scopes=[
                     ScanScope(
@@ -34,6 +36,50 @@ class TargetCompatScanService:
                 ],
             )
         )
+
+    async def start_scan(self) -> None:
+        await self._request_scan(trigger="subsonic")
+
+    async def scan(self, _library_paths) -> None:  # noqa: ANN001
+        """Refresh the target catalog and wait until the accepted run is terminal.
+
+        A request covered by an already-active run is not sufficient for files that
+        landed after that run's discovery phase. Wait for that run, then request one
+        fresh pass so Tidarr completion is verified against the catalog the target UI
+        and download orchestrator actually read.
+        """
+        terminal = {
+            "completed",
+            "cancelled",
+            "superseded_policy_changed",
+            "failed",
+        }
+        while True:
+            result = await self._request_scan(trigger="automatic")
+            if result.disposition == "conflict":
+                while await self._coordinator.current():
+                    await asyncio.sleep(1.0)
+                continue
+
+            snapshot = await self._coordinator.snapshot(result.run_id)
+            covered_by_active = (
+                result.disposition == "coalesced"
+                and snapshot.run.state != "queued"
+            )
+            while snapshot.run.state not in terminal:
+                await asyncio.sleep(1.0)
+                snapshot = await self._coordinator.snapshot(result.run_id)
+
+            if snapshot.run.state != "completed":
+                raise RuntimeError(
+                    f"Target library scan ended in state {snapshot.run.state}"
+                )
+            if covered_by_active:
+                continue
+            return
+
+    async def is_running(self) -> bool:
+        return bool(await self._coordinator.current())
 
     async def start(self) -> None:
         await self.start_scan()
