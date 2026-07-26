@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from repositories.tidarr.tidarr_client import TidarrSearchResult
+from services.native.acquisition import strategy as strategy_module
+from services.native.acquisition.errors import OrchestrationError
 from services.native.acquisition.strategy import TidarrStrategy
 
 
@@ -203,3 +205,37 @@ async def test_tidarr_completion_scans_only_matching_artist_folder(tmp_path):
     await strategy.import_files(task, MagicMock(), completed=True)
 
     scanner.scan.assert_awaited_once_with([artist])
+
+
+@pytest.mark.asyncio
+async def test_tidarr_completion_never_falls_back_to_full_library(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "music"
+    root.mkdir()
+    scanner = MagicMock()
+    scanner.scan = AsyncMock()
+    library = MagicMock()
+    library.get_file_rows_for_album = AsyncMock(return_value=[])
+    strategy = TidarrStrategy(
+        client=MagicMock(),
+        tidarr=MagicMock(),
+        store=MagicMock(),
+        scanner=scanner,
+        library=library,
+        library_paths=[root],
+        staging=tmp_path,
+        manifest_codec=MagicMock(),
+        naming_template="",
+    )
+    task = _album_task()
+    task.release_group_mbid = "rg-1"
+    monkeypatch.setattr(strategy_module, "_TIDARR_LIBRARY_SETTLE_SECONDS", 0.0)
+
+    with pytest.raises(
+        OrchestrationError,
+        match="final artist folder did not appear",
+    ):
+        await strategy.import_files(task, MagicMock(), completed=True)
+
+    scanner.scan.assert_not_awaited()

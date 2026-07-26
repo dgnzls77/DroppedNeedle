@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 # Re-poll budget for an unpacked Usenet job folder, tolerating a separate-NFS-client
 # directory-attribute cache lag (a shared client sees the move instantly).
 _USENET_SETTLE_SECONDS = 20.0
+_TIDARR_LIBRARY_SETTLE_SECONDS = 180.0
+_TIDARR_LIBRARY_SETTLE_INTERVAL_SECONDS = 2.0
 
 # A SABnzbd failure mentioning one of these is a password-protected NZB - a non-retryable
 # skip (blocklisted regardless of age, since propagation can't fix encryption).
@@ -522,23 +524,35 @@ class TidarrStrategy:
         # Tidarr has already run Tiddl, Beets, ReplayGain and the final move. An
         # incremental scan indexes those final files without renaming or importing them.
         # Scope it to the artist whenever possible: scanning every library file after
-        # one album completes made downloads appear stuck for hours.
-        artist_key = fold(task.artist_name)
+        # one album completes made downloads appear stuck for hours. Tidarr can briefly
+        # report a terminal queue state before its final copy becomes visible through the
+        # library mount, so wait for the artist directory instead of falling back to the
+        # configured library root.
+        deadline = asyncio.get_running_loop().time() + _TIDARR_LIBRARY_SETTLE_SECONDS
         scan_paths: list[Path] = []
-        for root in self._library_paths:
-            try:
-                exact = root / task.artist_name
-                if exact.is_dir():
-                    scan_paths.append(exact)
+        while not scan_paths:
+            artist_key = fold(task.artist_name)
+            for root in self._library_paths:
+                try:
+                    exact = root / task.artist_name
+                    if exact.is_dir():
+                        scan_paths.append(exact)
+                        continue
+                    scan_paths.extend(
+                        child
+                        for child in root.iterdir()
+                        if child.is_dir() and fold(child.name) == artist_key
+                    )
+                except OSError:
                     continue
-                scan_paths.extend(
-                    child
-                    for child in root.iterdir()
-                    if child.is_dir() and fold(child.name) == artist_key
+            if scan_paths:
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                raise OrchestrationError(
+                    "Tidarr finished but its final artist folder did not appear"
                 )
-            except OSError:
-                continue
-        await self._scanner.scan(scan_paths or self._library_paths)
+            await asyncio.sleep(_TIDARR_LIBRARY_SETTLE_INTERVAL_SECONDS)
+        await self._scanner.scan(scan_paths)
         rows = await self._library.get_file_rows_for_album(task.release_group_mbid)
         paths = [str(row["file_path"]) for row in rows if row.get("file_path")]
         if paths:
