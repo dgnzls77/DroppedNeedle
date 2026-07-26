@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Conservatively remove cosmetic remaster suffixes from audio TITLE/ALBUM tags.
+"""Remove cosmetic remaster wording from audio TITLE/ALBUM tags.
 
-The tool never renames files and never removes meaningful edition labels such as
-Live, Demo, Mono, Remix, Deluxe, Expanded, or Extended. Apply mode writes a JSONL
-restoration manifest before changing the first file; rollback mode restores only
-records whose current values still match the manifest's expected cleaned values.
+The tool never renames files. It removes remaster wording even when it is nested
+inside a larger edition suffix, while retaining meaningful non-remaster details
+such as Live, Demo, Mono, Remix, Alternate Take, or soundtrack labels. Apply mode
+writes a JSONL restoration manifest before changing the first file; rollback mode
+restores only records whose current values still match the manifest's expected
+cleaned values.
 """
 
 from __future__ import annotations
@@ -46,13 +48,84 @@ _REMASTER_SUFFIX = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+_BRACKET_GROUP = re.compile(r"([\[(])([^()\[\]]*)([\])])")
+_REMASTER_WORD = re.compile(r"\bre-?master(?:ed|izado)?\b", re.IGNORECASE)
+_REMASTER_PHRASE = re.compile(
+    r"""
+    (?:
+        \bthe\s+
+    )?
+    (?:
+        (?:\d+(?:st|nd|rd|th)\s+anniversary|\d{4})
+        \s*(?:[-/]\s*)?
+    )?
+    (?:
+        (?:digital(?:ly)?|newly)\s+
+    )?
+    re-?master(?:ed|izado)?
+    (?:\s+(?:version|edition))?
+    (?:\s+\d{4})?
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_EDGE_SEPARATORS = re.compile(r"^(?:\s*[/+&,;:\u2013\u2014-]\s*)+|(?:\s*[/+&,;:\u2013\u2014-]\s*)+$")
+_EMPTY_GROUP = re.compile(r"\s*[\[(]\s*[\])]\s*")
+_NESTED_BRACKETS = re.compile(r"\(\s*\[([^\[\]]+)\]\s*\)")
+_SPACE_BEFORE_PUNCTUATION = re.compile(r"\s+([,;:])")
+_EDITION_ONLY_WORDS = {
+    "anniversary",
+    "archive",
+    "bonus",
+    "box",
+    "collection",
+    "definitive",
+    "deluxe",
+    "edition",
+    "expanded",
+    "extended",
+    "issue",
+    "re",
+    "set",
+    "super",
+    "the",
+    "track",
+    "tracks",
+    "version",
+}
+
+
+def _edition_only(value: str) -> bool:
+    tokens = re.findall(r"[a-z0-9]+", value.casefold())
+    return bool(tokens) and all(
+        token in _EDITION_ONLY_WORDS
+        or token.isdigit()
+        or re.fullmatch(r"\d+(?:st|nd|rd|th)", token) is not None
+        for token in tokens
+    )
+
+
+def _clean_group(match: re.Match[str]) -> str:
+    opener, original, closer = match.groups()
+    had_remaster = _REMASTER_WORD.search(original) is not None
+    cleaned = _REMASTER_PHRASE.sub("", original) if had_remaster else original
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = _EDGE_SEPARATORS.sub("", cleaned).strip()
+    if not cleaned or (had_remaster and _edition_only(cleaned)):
+        return ""
+    return f"{opener}{cleaned}{closer}"
 
 
 def clean_title(value: str) -> str:
-    """Strip one or more safe trailing remaster-only suffixes."""
+    """Remove cosmetic remaster wording while preserving useful variant detail."""
     current = (value or "").strip()
     while current:
         cleaned = _REMASTER_SUFFIX.sub("", current).rstrip()
+        cleaned = _BRACKET_GROUP.sub(_clean_group, cleaned)
+        cleaned = _REMASTER_PHRASE.sub("", cleaned)
+        cleaned = _NESTED_BRACKETS.sub(r"(\1)", cleaned)
+        cleaned = _EMPTY_GROUP.sub(" ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = _SPACE_BEFORE_PUNCTUATION.sub(r"\1", cleaned)
         if cleaned == current:
             break
         current = cleaned

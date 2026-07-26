@@ -29,6 +29,24 @@ def cleaner():
         ("Song — Remastered", "Song"),
         ("Song [Long Version] [2002 Remaster]", "Song [Long Version]"),
         ("(You Gotta Walk) Don't Look Back [2002 Remaster]", "(You Gotta Walk) Don't Look Back"),
+        ("Song (Remasterizado 2012)", "Song"),
+        ("Song (Digitally Remastered)", "Song"),
+        ("Song (The Remaster)", "Song"),
+        ("Album (25th Anniversary Remaster)", "Album"),
+        ("Album (Deluxe Remastered Edition)", "Album"),
+        ("Album (Remastered / Expanded Edition)", "Album"),
+        (
+            "Album (Original Motion Picture Soundtrack / Remastered)",
+            "Album (Original Motion Picture Soundtrack)",
+        ),
+        ("Song (Mono / Remastered 2022)", "Song (Mono)"),
+        ("Song (Alternate Take / Remastered 1999)", "Song (Alternate Take)"),
+        ("Song (Single (Remaster))", "Song (Single)"),
+        ("Song (Remastered [Live])", "Song (Live)"),
+        (
+            "Peter and the Wolf (Remastered): The Bird",
+            "Peter and the Wolf: The Bird",
+        ),
     ],
 )
 def test_clean_title_removes_only_safe_remaster_suffixes(cleaner, original, expected):
@@ -38,16 +56,16 @@ def test_clean_title_removes_only_safe_remaster_suffixes(cleaner, original, expe
 @pytest.mark.parametrize(
     "title",
     [
-        "Song (Demo / Remastered 2016)",
-        "Song (Mono / Remastered 2022)",
-        "Song (Remix/Remastered 2009)",
-        "Song (Live 1975/Remastered)",
-        "Album (Deluxe Remastered Edition)",
-        "Album (Remastered / Expanded Edition)",
-        "Album (25th Anniversary Remaster)",
+        "Song (Demo)",
+        "Song (Mono)",
+        "Song (Remix)",
+        "Song (Live 1975)",
+        "Album (Deluxe Edition)",
+        "Album (Expanded Edition)",
+        "Album (25th Anniversary Edition)",
     ],
 )
-def test_clean_title_preserves_complex_or_meaningful_editions(cleaner, title):
+def test_clean_title_preserves_values_without_remaster_wording(cleaner, title):
     assert cleaner.clean_title(title) == title
 
 
